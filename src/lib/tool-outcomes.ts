@@ -27,6 +27,7 @@ export class ToolOutcomeTracker {
 	private readonly terminalCalls = new Map<string, Set<string>>();
 	private readonly fallbackCalls = new Map<string, Set<string>>();
 	private readonly failures = new Map<string, { signature: string; count: number }>();
+	private readonly consecutiveFailures = new Map<string, number>();
 
 	record(part: ToolOutcomePart): ToolOutcome | undefined {
 		if (part.type !== "tool" || typeof part.sessionID !== "string" || typeof part.callID !== "string" || typeof part.tool !== "string") return undefined;
@@ -51,6 +52,7 @@ export class ToolOutcomeTracker {
 		const durationMs = typeof start === "number" && Number.isFinite(start) && typeof end === "number" && Number.isFinite(end) ? Math.max(0, end - start) : undefined;
 		if (status === "completed") {
 			this.failures.delete(part.sessionID);
+			this.consecutiveFailures.delete(part.sessionID);
 			return { sessionID: part.sessionID, callID: part.callID, tool: part.tool, status, durationMs };
 		}
 
@@ -59,6 +61,10 @@ export class ToolOutcomeTracker {
 		const previous = this.failures.get(part.sessionID);
 		const count = previous?.signature === signature ? previous.count + 1 : 1;
 		this.failures.set(part.sessionID, { signature, count });
+
+		const consecutive = (this.consecutiveFailures.get(part.sessionID) ?? 0) + 1;
+		this.consecutiveFailures.set(part.sessionID, consecutive);
+
 		return { sessionID: part.sessionID, callID: part.callID, tool: part.tool, status, durationMs, repeatedFailureCount: count };
 	}
 
@@ -75,11 +81,14 @@ export class ToolOutcomeTracker {
 	}
 
 	getFailureCount(sessionID: string): number {
-		return this.failures.get(sessionID)?.count ?? 0;
+		const consecutive = this.consecutiveFailures.get(sessionID) ?? 0;
+		const equivalent = this.failures.get(sessionID)?.count ?? 0;
+		return Math.max(consecutive, equivalent);
 	}
 
 	clearSession(sessionID: string): void {
 		this.failures.delete(sessionID);
+		this.consecutiveFailures.delete(sessionID);
 		this.terminalCalls.delete(sessionID);
 		this.fallbackCalls.delete(sessionID);
 	}

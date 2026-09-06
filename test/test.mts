@@ -497,6 +497,9 @@ check("sed -i on opencode.json blocked (tamper)", blocked(await call("bash", { c
 check("git apply needs todos (patch via shell)", blocked(await call("bash", { command: "git apply patch.diff" }, { sessionID: "s-empty" })));
 check("git apply allowed with todos", !(await call("bash", { command: "git apply patch.diff" }, { sessionID: "s-active" })));
 check("non-mutating shell unaffected (ls, cat)", !(await call("bash", { command: "ls -la && cat file" }, { sessionID: "s-empty" })));
+check("inspection command with mutation keywords in grep argument is not blocked", !(await call("bash", { command: 'strings /bin/opencode | grep -E "install plugin and update config" -C 10' }, { sessionID: "s-empty" })));
+check("git log with mutation keywords in grep argument is not blocked", !(await call("bash", { command: 'git log --grep="rm old files"' }, { sessionID: "s-empty" })));
+check("grep searching for mutation command name is not blocked", !(await call("bash", { command: 'grep -rn "mkdir" src/' }, { sessionID: "s-empty" })));
 check("stderr redirect to /dev/null is not a file mutation", !(await call("bash", { command: "ls missing 2>/dev/null" }, { sessionID: "s-empty" })));
 check("touch outside workspace is blocked", blocked(await call("bash", { command: "touch /tmp/wg-outside-touch" }, { sessionID: "s-active" })));
 check("mkdir outside workspace is blocked", blocked(await call("bash", { command: "mkdir /tmp/wg-outside-dir" }, { sessionID: "s-active" })));
@@ -1112,6 +1115,12 @@ outcomeTracker.record({ type: "tool", sessionID: "s-tracker", callID: "success",
 check("successful tool outcomes reset equivalent failure tracking", outcomeTracker.record(failedPart("after-success", "same failure"))?.repeatedFailureCount === 1);
 outcomeTracker.record(failedPart("different", "different failure"));
 check("distinct failures reset equivalent failure tracking", outcomeTracker.record(failedPart("after-different", "same failure"))?.repeatedFailureCount === 1);
+const consecutiveTracker = new ToolOutcomeTracker();
+consecutiveTracker.record(failedPart("diverse-1", "failure A"));
+consecutiveTracker.record(failedPart("diverse-2", "failure B"));
+check("consecutive diverse failures track failure count for circuit breaker", consecutiveTracker.getFailureCount("s-tracker") === 2);
+consecutiveTracker.record({ type: "tool", sessionID: "s-tracker", callID: "diverse-success", tool: "bash", state: { status: "completed" } });
+check("successful tool outcome resets consecutive failure count", consecutiveTracker.getFailureCount("s-tracker") === 0);
 const boundedTracker = new ToolOutcomeTracker();
 for (let i = 0; i < 4096; i++) boundedTracker.record({ type: "tool", sessionID: "s-bounded", callID: `call-${i}`, tool: "bash", state: { status: "completed" } });
 check("terminal call deduplication remains stable within its bounded window", boundedTracker.record({ type: "tool", sessionID: "s-bounded", callID: "call-0", tool: "bash", state: { status: "completed" } }) === undefined);
