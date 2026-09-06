@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.1
+
+### Patch Changes
+
+- dfb1e73: Prevent false-positive shell file mutation blocks when mutation keywords appear in arguments to read-only inspection commands (`grep`, `strings`, `git log`), and make circuit breaker failure tracking escalate across consecutive diverse failures in a session.
+
 ## 1.10.0
 
 ### Minor Changes
