@@ -158,13 +158,9 @@ export function shellMutationIn(segment: string): ShellMutation | undefined {
 			what: `tee to '${teeTargets[0]!}'`,
 		};
 	}
-	const sedWords = shellWords(unwrapShellCommand(segment));
-	if (sedWords[0] === "sed" && sedWords.slice(1).some((word) => /^-(?:[a-zA-Z]*i|i\S*)$/.test(word) || /^--in-place(?:=.*)?$/.test(word))) {
-		const operands = sedWords.slice(1).filter((word) => !word.startsWith("-"));
-		const target = operands.at(-1);
-		if (!target) return undefined;
-		return { kind: "command", target, what: `sed -i on '${target}'` };
-	}
+	const simple = simpleFilesystemMutations(segment);
+	if (simple.length > 0) return simple[0];
+
 	const transfer = filesystemTransferInfo(segment);
 	if (transfer?.destination) {
 		return {
@@ -173,34 +169,45 @@ export function shellMutationIn(segment: string): ShellMutation | undefined {
 			what: `copy/move/link to '${transfer.destination}'`,
 		};
 	}
-	const fsMutationMatch = segment.match(
-		/\b(?:touch|mkdir|rm|unlink|rmdir|ln)\b[^|;&]*\s+["']?([^\s;&|"']+)["']?\s*$/,
-	);
-	if (fsMutationMatch?.[1] && !fsMutationMatch[1].startsWith("-")) {
-		return {
-			kind: "command",
-			target: fsMutationMatch[1],
-			what: `filesystem mutation of '${fsMutationMatch[1]}'`,
-		};
+	const words = shellWords(unwrapShellCommand(segment));
+	const command = words[0];
+	if (!command) return undefined;
+
+	if (command === "curl") {
+		for (let i = 1; i < words.length; i++) {
+			const w = words[i]!;
+			if ((w === "-o" || w === "--output") && i + 1 < words.length) {
+				return { kind: "command", target: words[i + 1]!, what: `curl output to '${words[i + 1]!}'` };
+			}
+			if (w.startsWith("--output=")) {
+				const target = w.slice("--output=".length);
+				return { kind: "command", target, what: `curl output to '${target}'` };
+			}
+		}
 	}
-	const copyMatch = segment.match(
-		/\b(?:cp|mv|rsync|install|cpio|scp|wget|curl)\b[^|;&]*?(-o\s+)?(["']?)([^\s;&|"']+)\2?\s*$/,
-	);
-	if (copyMatch?.[3] && /\b(?:cp|mv|rsync|install)\b/.test(segment)) {
-		return {
-			kind: "command",
-			target: copyMatch[3],
-			what: `copy/move to '${copyMatch[3]}'`,
-		};
+	if (command === "wget") {
+		for (let i = 1; i < words.length; i++) {
+			const w = words[i]!;
+			if ((w === "-O" || w === "--output-document") && i + 1 < words.length) {
+				return { kind: "command", target: words[i + 1]!, what: `wget output to '${words[i + 1]!}'` };
+			}
+			if (w.startsWith("--output-document=")) {
+				const target = w.slice("--output-document=".length);
+				return { kind: "command", target, what: `wget output to '${target}'` };
+			}
+		}
 	}
-	if (/\bgit\s+(?:apply|am)\b/.test(segment)) {
-		return { kind: "command", what: "git apply/am (patch via shell)" };
+	if (command === "git") {
+		const sub = words.slice(1).find((w) => !w.startsWith("-"));
+		if (sub === "apply" || sub === "am") {
+			return { kind: "command", what: "git apply/am (patch via shell)" };
+		}
 	}
 	return undefined;
 }
 
 const SIMPLE_MUTATION_COMMANDS = new Set(["touch", "mkdir", "rm", "unlink", "rmdir", "truncate", "chmod", "chown", "chgrp"]);
-const TRANSFER_COMMANDS = new Set(["cp", "mv", "ln"]);
+const TRANSFER_COMMANDS = new Set(["cp", "mv", "ln", "rsync", "install", "cpio", "scp"]);
 
 export function simpleFilesystemMutations(segment: string): ShellMutation[] {
 	const words = shellWords(unwrapShellCommand(segment));
