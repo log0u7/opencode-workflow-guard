@@ -1899,6 +1899,11 @@ check("guard_status exposes subject-bound evidence references", parsedStatus.las
 check("guard_status exposes effective operation profile without TUI state", parsedStatus.projectConfig.profile === "interactive" && typeof parsedStatus.projectConfig.recoveryCheckpoints === "boolean");
 check("guard_status exposes disabled-by-default Ralph accountability state", parsedStatus.ralph?.enabled === false && parsedStatus.ralph?.maxIterations === 10 && parsedStatus.ralph?.outcome === null);
 check("guard_status exposes bounded outstanding requirements", Array.isArray(parsedStatus.outstandingRequirements) && parsedStatus.outstandingRequirements.every((requirement: unknown) => ["verification", "review", "documentation"].includes(String(requirement))));
+check("guard_status exposes actionable recommended actions", Array.isArray(parsedStatus.recommendedActions) && parsedStatus.recommendedActions.length > 0);
+check("guard_next_tasks description includes proactive trigger", Boolean(customPlugin.tool?.guard_next_tasks?.description.includes("Proactively call")));
+check("project_memory_search description includes proactive trigger", Boolean(customPlugin.tool?.project_memory_search?.description?.includes("Proactively call")));
+check("learning_checkpoint description includes proactive trigger", Boolean(customPlugin.tool?.learning_checkpoint?.description?.includes("Proactively call")));
+check("guard_review_rubric description includes orchestrator trigger", Boolean(customPlugin.tool?.guard_review_rubric?.description?.includes("orchestrator should call")));
 
 const requirementsRoot = mkdtempSync(join(tmpdir(), "wg-status-requirements-"));
 mkdirSync(join(requirementsRoot, ".opencode"), { recursive: true });
@@ -3207,6 +3212,26 @@ check("tool.definition enriches edit tool with preconditions", editDef.descripti
 const editIdemDef = { description: editDef.description, parameters: {} };
 await defPlugin["tool.definition"]?.({ toolID: "edit" } as any, editIdemDef);
 check("tool.definition edit enrichment is idempotent", editIdemDef.description === editDef.description);
+
+const taskDef = { description: "Launch subagents.", parameters: {} };
+await defPlugin["tool.definition"]?.({ toolID: "task" } as any, taskDef);
+check("tool.definition enriches task tool with subagent and review guidance", taskDef.description.includes("Workflow Guard subagent guidance") && taskDef.description.includes("guard_worktree_create") && taskDef.description.includes("guard_review_rubric"));
+const taskIdemDef = { description: taskDef.description, parameters: {} };
+await defPlugin["tool.definition"]?.({ toolID: "task" } as any, taskIdemDef);
+check("tool.definition task enrichment is idempotent", taskIdemDef.description === taskDef.description);
+check("tool.definition todowrite enriches with planning and status guidance", todoDef.description.includes("guard_next_tasks") && todoDef.description.includes("guard_status"));
+
+// experimental.chat.system.transform provides cross-model workflow guidance
+const systemOutput = { system: ["Base system prompt"] };
+await defPlugin["experimental.chat.system.transform"]?.({ model: { id: "gemini-flash" } as any }, systemOutput);
+check("experimental.chat.system.transform adds workflow guard guidance", systemOutput.system.length === 2 && systemOutput.system[1].includes("## Workflow Guard & Operational Tools") && systemOutput.system[1].includes("guard_next_tasks") && systemOutput.system[1].includes("guard_review_rubric"));
+const systemOutputIdem = { system: [...systemOutput.system] };
+await defPlugin["experimental.chat.system.transform"]?.({ model: { id: "gemini-flash" } as any }, systemOutputIdem);
+check("experimental.chat.system.transform is idempotent", systemOutputIdem.system.length === 2);
+
+const readOnlySystemOutput = { system: ["Base system prompt"] };
+await defPlugin["experimental.chat.system.transform"]?.({ agent: "reviewer", model: { id: "claude-sonnet" } as any } as any, readOnlySystemOutput);
+check("experimental.chat.system.transform respects read-only roles", !readOnlySystemOutput.system[1].includes("spawn a reviewer subagent"));
 
 // Socratic learning engine: evidence is explicit and interventions favor
 // relevant gaps without repeatedly interrupting demonstrated knowledge.

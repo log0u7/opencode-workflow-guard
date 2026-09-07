@@ -97,7 +97,7 @@ export async function continueUnfinishedSession(sessionID: string, settleTitle =
 					messageID,
 					parts: [{
 						type: "text",
-						text: `Workflow Guard: unfinished todos remain. Continue working through them.${tasksSummary}\nIf you need user input, use the question tool instead of ending the run.`,
+						text: `Workflow Guard: unfinished todos remain. Continue working through them.${tasksSummary}\nIf you need user input, use the question tool instead of ending the run. Check guard_status for outstanding verification/review requirements, and guard_review_rubric before final completion.`,
 						synthetic: true,
 					}],
 				},

@@ -18,10 +18,10 @@ import { beginReadObservation, clearReadFingerprints, recordSuccessfulRead, stal
 import { ToolInvocationLifecycle } from "./lib/tool-lifecycle.ts";
 import { ToolOutcomeTracker, type ToolOutcomePart } from "./lib/tool-outcomes.ts";
 import { guardToolCallImpl, isReadOnlyRole } from "./lib/guard-dispatcher.ts";
-import { createCustomTools } from "./lib/custom-tools.ts";
+import { createCustomTools, buildWorkflowGuardSystemGuidance } from "./lib/custom-tools.ts";
 import type { PolicyDecision, TodoSdkClient } from "./lib/types.ts";
 export { isReadOnlyRole } from "./lib/guard-dispatcher.ts";
-export { extractReviewFollowups } from "./lib/custom-tools.ts";
+export { extractReviewFollowups, buildWorkflowGuardSystemGuidance } from "./lib/custom-tools.ts";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 export type {
@@ -416,7 +416,7 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 					await emitBlockFeedback(reason);
 					const failureCount = input.sessionID ? toolOutcomes.getFailureCount(input.sessionID) : 0;
 					const circuitBreakerSuffix = failureCount >= 2
-						? "\n\n[Workflow Guard Circuit Breaker: Repeated failures detected in this session. Stop attempting alternative workarounds or shell laundering. Address the required step above directly.]"
+						? "\n\n[Workflow Guard Circuit Breaker: Repeated failures detected in this session. Stop attempting alternative workarounds or shell laundering. Address the required step above directly, or inspect policy details with guard_status or guard_why.]"
 						: "";
 					throw new Error(`[workflow-guard] ${reason}${circuitBreakerSuffix}`);
 				}
@@ -611,13 +611,14 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 		// Keep tool descriptions honest: todowrite's description reflects lifecycle
 		// and finalization gates so the model is not surprised by preventable blocks.
 		// Similarly, mutating tools reflect their active-todo, feature-branch, and prior-read requirements.
+		// Subagent orchestration tools reflect worktree isolation and review expectations.
 		"tool.definition": async (input, output) => {
 			if (input.toolID === "todowrite") {
 				const description = typeof output.description === "string" ? output.description : "";
 				if (description.includes("verification evidence")) return;
 				output.description =
 					description +
-					"\n\nWorkflow Guard lifecycle: each todowrite call replaces the complete task list. Preserve every pending/in_progress task in subsequent updates until you explicitly mark it completed or cancelled; do not omit active tasks when adding new work. Marking every task completed triggers the finalization gate - fresh verification evidence (test run) is required after the last mutation, and protected-branch/conflict checks apply.";
+					"\n\nWorkflow Guard lifecycle: each todowrite call replaces the complete task list. Preserve every pending/in_progress task in subsequent updates until you explicitly mark it completed or cancelled; do not omit active tasks when adding new work. Marking every task completed triggers the finalization gate - fresh verification evidence (test run) is required after the last mutation, and protected-branch/conflict checks apply. Proactively call guard_next_tasks when planning work to discover existing roadmap/TODOs, and guard_status to check outstanding requirements.";
 				return;
 			}
 			if (EDIT_TOOL_NAMES.has(input.toolID)) {
@@ -628,6 +629,30 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 					"\n\nWorkflow Guard requirement: Modifications require an active task in todowrite (status pending or in_progress), a feature branch (edits on main/master are blocked), and a prior read of existing files in the current session.";
 				return;
 			}
+			if (input.toolID === "task") {
+				const description = typeof output.description === "string" ? output.description : "";
+				if (description.includes("Workflow Guard subagent guidance")) return;
+				output.description =
+					description +
+					"\n\nWorkflow Guard subagent guidance: When spawning parallel worker subagents, use guard_worktree_create to isolate file mutations in separate worktrees. When conducting code reviews before task completion or PR creation, fetch the rubric with guard_review_rubric and provide it to a reviewer subagent to evaluate and record via record_review.";
+				return;
+			}
+		},
+
+		"experimental.chat.system.transform": async (input, output) => {
+			try {
+				if (!Array.isArray(output?.system)) return;
+				const existing = output.system.join("\n");
+				if (existing.includes("## Workflow Guard & Operational Tools")) return;
+				const isReadOnly = (input as { agent?: string })?.agent ? isReadOnlyRole((input as { agent?: string }).agent!) : false;
+				const guidance = buildWorkflowGuardSystemGuidance({
+					projectMemoryEnabled,
+					learningEnabled,
+					recoveryCheckpointsEnabled: isRecoveryCheckpointsEnabled(effectiveRoot),
+					isReadOnly,
+				});
+				output.system.push(guidance);
+			} catch {}
 		},
 
 		"chat.message": async (input) => {
