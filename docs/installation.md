@@ -108,6 +108,22 @@ OpenCode's model/provider request timeout is separate from Workflow Guard. In Op
 
 ---
 
+## Secondary Review Requirement
+
+Workflow Guard enforces secondary review approval (`requireReview`) by default during PR creation (`gh pr create` and `az repos pr create`). Before a pull request can be opened, an agent must invoke a secondary review subagent and record passing review approval using `record_review` evaluated against `guard_review_rubric`.
+
+To opt out of the PR secondary review gate for a project, set `requireReview: false` in `.opencode/workflow-guard.json`:
+
+```json
+{
+  "requireReview": false
+}
+```
+
+Or set `WORKFLOW_GUARD_REQUIRE_REVIEW=0` in your environment. Conversely, `WORKFLOW_GUARD_REQUIRE_REVIEW=1` enforces the review gate regardless of repository configuration.
+
+---
+
 ## Recommended Companion Configuration
 
 For defense in depth, pair `opencode-workflow-guard` with OpenCode's native permission rules in `opencode.json` (see [OpenCode Permissions](https://opencode.ai/docs/permissions/)):

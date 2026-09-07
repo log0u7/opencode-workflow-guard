@@ -62,6 +62,7 @@ import {
 	checkLockfileSync,
 	branchHasDocumentationChange,
 	isDocumentationRequired,
+	isReviewRequired,
 	getOperationProfile,
 	isRecoveryCheckpointsEnabled,
 	getSubagentMutationBudget,
@@ -241,6 +242,7 @@ check("allow git push origin feature/x", !(await shell("git push origin feature/
 check("allow push to main-backup (ref-like path)", !(await shell("git push origin main-backup")));
 
 console.log("- Policy 3: PR changelog (GitHub & Azure DevOps) -");
+process.env.WORKFLOW_GUARD_REQUIRE_REVIEW = "0";
 check("block gh pr create without changelog", blocked(await shell("gh pr create --title t --body 'no changes here'")));
 check("allow gh pr create with Changelog: body", !(await shell("gh pr create --title t --body 'Changelog: fixed stuff'")));
 check("allow gh pr create with Summary release information", !(await shell("gh pr create --title t --body '## Summary\n- Fix stale tool outcome tracking'")));
@@ -340,6 +342,8 @@ setWorkspaceRoot(root);
 check("unrelated shell workdir cannot supply PR changelog evidence", blocked(await call("bash", { command: "gh pr create --title t --body 'clean pr description'", workdir: changesetWorktree })));
 spawnSync("git", ["worktree", "remove", "--force", changesetWorktree], { cwd: changesetRepo });
 rmSync(changesetRepo, { recursive: true, force: true });
+
+delete process.env.WORKFLOW_GUARD_REQUIRE_REVIEW;
 
 console.log("- Policy 4: destructive commands -");
 check("block kubectl delete", blocked(await shell("kubectl delete pod foo")));
@@ -1802,6 +1806,44 @@ setWorkspaceRoot(root);
 reloadProjectConfig(root);
 resetReviewState();
 
+// Default requireReview behavior: true by default, opt-out with config false or env 0
+const defaultReviewRepo = mkdtempSync(join(tmpdir(), "wg-default-review-"));
+mkdirSync(join(defaultReviewRepo, ".opencode"), { recursive: true });
+setWorkspaceRoot(defaultReviewRepo);
+reloadProjectConfig(defaultReviewRepo);
+check("requireReview defaults to true when unconfigured", isReviewRequired(defaultReviewRepo) === true);
+resetReviewState();
+check(
+	"PR creation blocked by default without recorded review in unconfigured repo",
+	blocked(await shell("gh pr create --title t --body 'Changelog: update'")),
+);
+writeFileSync(join(defaultReviewRepo, ".opencode", "workflow-guard.json"), JSON.stringify({ requireReview: false }));
+reloadProjectConfig(defaultReviewRepo);
+check("explicit requireReview: false disables review gate", isReviewRequired(defaultReviewRepo) === false);
+check(
+	"PR creation allowed when requireReview is explicitly false",
+	!(await shell("gh pr create --title t --body 'Changelog: update'")),
+);
+process.env.WORKFLOW_GUARD_REQUIRE_REVIEW = "1";
+check("WORKFLOW_GUARD_REQUIRE_REVIEW=1 forces review even when config is false", isReviewRequired(defaultReviewRepo) === true);
+check(
+	"PR creation blocked when WORKFLOW_GUARD_REQUIRE_REVIEW=1 overrides config false",
+	blocked(await shell("gh pr create --title t --body 'Changelog: update'")),
+);
+writeFileSync(join(defaultReviewRepo, ".opencode", "workflow-guard.json"), JSON.stringify({ requireReview: true }));
+reloadProjectConfig(defaultReviewRepo);
+process.env.WORKFLOW_GUARD_REQUIRE_REVIEW = "0";
+check("WORKFLOW_GUARD_REQUIRE_REVIEW=0 overrides config true", isReviewRequired(defaultReviewRepo) === false);
+check(
+	"PR creation allowed when WORKFLOW_GUARD_REQUIRE_REVIEW=0 overrides config true",
+	!(await shell("gh pr create --title t --body 'Changelog: update'")),
+);
+delete process.env.WORKFLOW_GUARD_REQUIRE_REVIEW;
+rmSync(defaultReviewRepo, { recursive: true, force: true });
+setWorkspaceRoot(root);
+reloadProjectConfig(root);
+resetReviewState();
+
 // 12. Custom Plugin Tools & Event Auditing
 console.log("- Custom Tools & Event Auditing -");
 const customPlugin = await (defaultExport?.server ?? WorkflowGuard)({
@@ -2191,6 +2233,7 @@ check(
 // Now update README.md or docs
 writeFileSync(join(docRepo, "README.md"), "# Updated Docs\n");
 spawnSync("git", ["commit", "-am", "docs: update README"], { cwd: docRepo });
+recordReviewResult("reviewer-agent", "LGTM - 5 axes verified", true, undefined, docRepo);
 check("branchHasDocumentationChange returns true once docs are modified", branchHasDocumentationChange(docRepo));
 check(
 	"gh pr create passes once documentation update is present",
