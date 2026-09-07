@@ -218,9 +218,11 @@ export function getProjectConfig(root: string): ProjectConfig {
 }
 
 export function isReviewRequired(root: string): boolean {
-	if (process.env.WORKFLOW_GUARD_REQUIRE_REVIEW === "1") return true;
+	const env = process.env.WORKFLOW_GUARD_REQUIRE_REVIEW?.toLowerCase();
+	if (env === "0" || env === "false" || env === "off") return false;
+	if (env === "1" || env === "true" || env === "on") return true;
 	const cfg = getProjectConfig(root);
-	return cfg.requireReview === true;
+	return cfg.requireReview !== false;
 }
 
 export function isDocumentationRequired(root: string): boolean {
