@@ -108,11 +108,13 @@ It is a policy and enforcement layer, not an agent harness. Policies may constra
 
 ### 15. Compaction State & Policy Context Preservation
 - Integrates with OpenCode's `experimental.session.compacting` hook to inject bounded active policy state into `output.context` before context summarization:
+  - Caps injected continuity context at 8,000 characters, preserving operational guard state first and filling the remaining budget with active tasks, review follow-ups, and fresh local project memory.
   - Active `todowrite` tasks with status badges and subagent hierarchy attribution.
   - Active Git branch name and protected branch status.
   - Test verification status (passed/failed, test command, and commit hash).
   - Secondary review verdicts (reviewer name and approval status).
   - Uncommitted mutation counts.
+- Compacted project-memory context points back to `project_memory_search` for deeper historical retrieval instead of attempting to embed the full durable store.
 - Preserves policy-relevant context across session compactions without assigning, prioritizing, or sequencing tasks for the model.
 
 ### 16. TUI Visual Feedback & Static Status Badge

@@ -12,6 +12,7 @@ import {
 	setWorkspaceRoot,
 	setSdkClient,
 	WorkflowGuard,
+	buildCompactionContext,
 	detectVerifyCommand,
 	runVerify,
 	getCleanEnv,
@@ -565,6 +566,13 @@ check("multi-target tee with an outside path is blocked", blocked(await call("ba
 check("tee --append within workspace is allowed with todos", !(await call("bash", { command: "echo x | tee --append src/a.ts" }, { sessionID: "s-active" })));
 
 console.log("- Compaction focus preservation & TUI toast -");
+const boundedCompaction = buildCompactionContext("## Operational Guard State\n- critical", ["## Active Tasks\n" + "a".repeat(10_000), "## Project Memory\nshould-not-fit"], 500);
+check("compaction packer enforces its total context budget", boundedCompaction.length === 500);
+check("compaction packer preserves mandatory operational state before optional context", boundedCompaction.startsWith("## Operational Guard State\n- critical") && !boundedCompaction.includes("should-not-fit"));
+check("compaction packer preserves the largest valid Unicode prefix", buildCompactionContext("critical \u{1F680}state", [], 10) === "critical ");
+let invalidCompactionBudgetRejected = false;
+try { buildCompactionContext("critical", [], Number.NaN); } catch (error) { invalidCompactionBudgetRejected = error instanceof RangeError; }
+check("compaction packer rejects invalid public budgets", invalidCompactionBudgetRejected);
 let toasts: unknown[] = [];
 const toastClient = {
 	session: fakeClient.session,
@@ -588,6 +596,8 @@ if (typeof compactFn === "function") {
 	await compactFn({ sessionID: "s-active" } as any, compactOutput as any);
 }
 check("compaction hook injects active tasks into output.context", compactOutput.context.length > 0 && (compactOutput.context[0]?.includes("Active Tasks") ?? false));
+check("compaction hook keeps injected continuity context bounded", compactOutput.context.every((context) => context.length <= 8000));
+check("compaction hook preserves operational guard state within its budget", compactOutput.context.some((context) => context.includes("## Operational Guard State") && context.includes("Git Branch:")));
 
 // Blocked tool call emits one in-app warning via tui.showToast.
 toasts = [];
