@@ -108,11 +108,13 @@ It is a policy and enforcement layer, not an agent harness. Policies may constra
 
 ### 15. Compaction State & Policy Context Preservation
 - Integrates with OpenCode's `experimental.session.compacting` hook to inject bounded active policy state into `output.context` before context summarization:
+  - Caps injected continuity context at 8,000 characters, preserving operational guard state first and filling the remaining budget with active tasks, review follow-ups, and fresh local project memory.
   - Active `todowrite` tasks with status badges and subagent hierarchy attribution.
   - Active Git branch name and protected branch status.
   - Test verification status (passed/failed, test command, and commit hash).
   - Secondary review verdicts (reviewer name and approval status).
   - Uncommitted mutation counts.
+- Compacted project-memory context points back to `project_memory_search` for deeper historical retrieval instead of attempting to embed the full durable store.
 - Preserves policy-relevant context across session compactions without assigning, prioritizing, or sequencing tasks for the model.
 
 ### 16. TUI Visual Feedback & Static Status Badge
@@ -155,8 +157,13 @@ It is a policy and enforcement layer, not an agent harness. Policies may constra
 - Mismatches (failing verification, stale evidence due to mutations after the verify run, or no evidence at all) are journaled to the audit trail and logged at info level. This is **observability, not gating**: the response is never blocked, but a confident wrap-up cannot silently contradict a failing or absent verification state.
 - Uses the `experimental.text.complete` hook; claim detection is a conservative phrase heuristic to avoid false positives on casual wording.
 
-### Tool Description Honesty
-- Via the `tool.definition` hook, the guard enriches the `todowrite` tool's description with its replacement-list lifecycle and finalization gates (including verification evidence required after the last mutation), so the model is not surprised by preventable lifecycle blocks. Other tools are untouched, and the enrichment is idempotent.
+### Tool Description Honesty & Cross-Model Adherence
+- Via the `tool.definition` hook, the guard enriches tool descriptions to keep them honest and proactive across all model families (OpenAI, Gemini, Claude, and open-weights models):
+  - `todowrite`: Explains its replacement-list lifecycle, finalization verification gate, and directs models to `guard_next_tasks` for roadmap discovery and `guard_status` for gate checks.
+  - Mutating tools (`edit`, `write`, `apply_patch`): States preconditions (active todo, feature branch, prior read).
+  - `task`: Guides orchestrator agents to isolate parallel mutations with `guard_worktree_create` and conduct secondary reviews via `guard_review_rubric` and `record_review`.
+- Via the `experimental.chat.system.transform` hook, the guard provides concise operational guidelines in the system prompt detailing available guard tools (`guard_next_tasks`, `guard_status`, `guard_review_rubric`, `guard_worktree_create`, `project_memory_*`, `learning_*`, `guard_why`), heavily encouraging open models and Gemini/Claude to proactively use workflow discipline features throughout development.
+- Companion tools feature proactive action triggers ("Proactively call...", "Recommended at session start..."), and `guard_status` returns actionable `recommendedActions` directing models to the exact next step.
 
 ---
 

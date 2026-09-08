@@ -12,6 +12,7 @@ import {
 	setWorkspaceRoot,
 	setSdkClient,
 	WorkflowGuard,
+	buildCompactionContext,
 	detectVerifyCommand,
 	runVerify,
 	getCleanEnv,
@@ -565,6 +566,13 @@ check("multi-target tee with an outside path is blocked", blocked(await call("ba
 check("tee --append within workspace is allowed with todos", !(await call("bash", { command: "echo x | tee --append src/a.ts" }, { sessionID: "s-active" })));
 
 console.log("- Compaction focus preservation & TUI toast -");
+const boundedCompaction = buildCompactionContext("## Operational Guard State\n- critical", ["## Active Tasks\n" + "a".repeat(10_000), "## Project Memory\nshould-not-fit"], 500);
+check("compaction packer enforces its total context budget", boundedCompaction.length === 500);
+check("compaction packer preserves mandatory operational state before optional context", boundedCompaction.startsWith("## Operational Guard State\n- critical") && !boundedCompaction.includes("should-not-fit"));
+check("compaction packer preserves the largest valid Unicode prefix", buildCompactionContext("critical \u{1F680}state", [], 10) === "critical ");
+let invalidCompactionBudgetRejected = false;
+try { buildCompactionContext("critical", [], Number.NaN); } catch (error) { invalidCompactionBudgetRejected = error instanceof RangeError; }
+check("compaction packer rejects invalid public budgets", invalidCompactionBudgetRejected);
 let toasts: unknown[] = [];
 const toastClient = {
 	session: fakeClient.session,
@@ -588,6 +596,8 @@ if (typeof compactFn === "function") {
 	await compactFn({ sessionID: "s-active" } as any, compactOutput as any);
 }
 check("compaction hook injects active tasks into output.context", compactOutput.context.length > 0 && (compactOutput.context[0]?.includes("Active Tasks") ?? false));
+check("compaction hook keeps injected continuity context bounded", compactOutput.context.every((context) => context.length <= 8000));
+check("compaction hook preserves operational guard state within its budget", compactOutput.context.some((context) => context.includes("## Operational Guard State") && context.includes("Git Branch:")));
 
 // Blocked tool call emits one in-app warning via tui.showToast.
 toasts = [];
@@ -1899,6 +1909,10 @@ check("guard_status exposes subject-bound evidence references", parsedStatus.las
 check("guard_status exposes effective operation profile without TUI state", parsedStatus.projectConfig.profile === "interactive" && typeof parsedStatus.projectConfig.recoveryCheckpoints === "boolean");
 check("guard_status exposes disabled-by-default Ralph accountability state", parsedStatus.ralph?.enabled === false && parsedStatus.ralph?.maxIterations === 10 && parsedStatus.ralph?.outcome === null);
 check("guard_status exposes bounded outstanding requirements", Array.isArray(parsedStatus.outstandingRequirements) && parsedStatus.outstandingRequirements.every((requirement: unknown) => ["verification", "review", "documentation"].includes(String(requirement))));
+check("guard_status exposes actionable recommended actions", Array.isArray(parsedStatus.recommendedActions) && parsedStatus.recommendedActions.length > 0);
+check("guard_next_tasks description includes proactive trigger", Boolean(customPlugin.tool?.guard_next_tasks?.description.includes("Proactively call")));
+check("project_memory_search description includes proactive trigger", Boolean(customPlugin.tool?.project_memory_search?.description?.includes("Proactively call")));
+check("guard_review_rubric description includes orchestrator trigger", Boolean(customPlugin.tool?.guard_review_rubric?.description?.includes("orchestrator should call")));
 
 const requirementsRoot = mkdtempSync(join(tmpdir(), "wg-status-requirements-"));
 mkdirSync(join(requirementsRoot, ".opencode"), { recursive: true });
@@ -3208,6 +3222,26 @@ const editIdemDef = { description: editDef.description, parameters: {} };
 await defPlugin["tool.definition"]?.({ toolID: "edit" } as any, editIdemDef);
 check("tool.definition edit enrichment is idempotent", editIdemDef.description === editDef.description);
 
+const taskDef = { description: "Launch subagents.", parameters: {} };
+await defPlugin["tool.definition"]?.({ toolID: "task" } as any, taskDef);
+check("tool.definition enriches task tool with subagent and review guidance", taskDef.description.includes("Workflow Guard subagent guidance") && taskDef.description.includes("guard_worktree_create") && taskDef.description.includes("guard_review_rubric"));
+const taskIdemDef = { description: taskDef.description, parameters: {} };
+await defPlugin["tool.definition"]?.({ toolID: "task" } as any, taskIdemDef);
+check("tool.definition task enrichment is idempotent", taskIdemDef.description === taskDef.description);
+check("tool.definition todowrite enriches with planning and status guidance", todoDef.description.includes("guard_next_tasks") && todoDef.description.includes("guard_status"));
+
+// experimental.chat.system.transform provides cross-model workflow guidance
+const systemOutput = { system: ["Base system prompt"] };
+await defPlugin["experimental.chat.system.transform"]?.({ model: { id: "gemini-flash" } as any }, systemOutput);
+check("experimental.chat.system.transform adds workflow guard guidance", systemOutput.system.length === 2 && systemOutput.system[1].includes("## Workflow Guard & Operational Tools") && systemOutput.system[1].includes("guard_next_tasks") && systemOutput.system[1].includes("guard_review_rubric"));
+const systemOutputIdem = { system: [...systemOutput.system] };
+await defPlugin["experimental.chat.system.transform"]?.({ model: { id: "gemini-flash" } as any }, systemOutputIdem);
+check("experimental.chat.system.transform is idempotent", systemOutputIdem.system.length === 2);
+
+const readOnlySystemOutput = { system: ["Base system prompt"] };
+await defPlugin["experimental.chat.system.transform"]?.({ agent: "reviewer", model: { id: "claude-sonnet" } as any } as any, readOnlySystemOutput);
+check("experimental.chat.system.transform respects read-only roles", !readOnlySystemOutput.system[1].includes("spawn a reviewer subagent"));
+
 // Socratic learning engine: evidence is explicit and interventions favor
 // relevant gaps without repeatedly interrupting demonstrated knowledge.
 const learner = createLearnerProfile();
@@ -3287,6 +3321,7 @@ const learningPlugin = await WorkflowGuard({ directory: root, worktree: root, cl
 check("learning mode registers profile tool when explicitly enabled", !!learningPlugin.tool?.learning_profile);
 check("learning mode registers adaptive checkpoint tool", !!learningPlugin.tool?.learning_checkpoint);
 check("learning mode registers evidence recorder", !!learningPlugin.tool?.learning_record);
+check("learning_checkpoint description includes proactive trigger", Boolean(learningPlugin.tool?.learning_checkpoint?.description?.includes("Proactively call")));
 const checkpointResult = JSON.parse(await (learningPlugin.tool as any).learning_checkpoint.execute({
 	opportunities: [{ type: "design", concept: "application-state", relevance: 1, consequence: 0.9 }],
 }, { sessionID: "s-learning-tools" }));

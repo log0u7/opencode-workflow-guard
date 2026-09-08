@@ -53,6 +53,51 @@ export function extractReviewFollowups(summary: string): Array<{ severity: "P2" 
 		.map((finding) => ({ severity: finding.severity, summary: finding.line }));
 }
 
+export function buildWorkflowGuardSystemGuidance(options: {
+	projectMemoryEnabled?: boolean;
+	learningEnabled?: boolean;
+	recoveryCheckpointsEnabled?: boolean;
+	isReadOnly?: boolean;
+}): string {
+	const sections: string[] = [
+		"## Workflow Guard & Operational Tools",
+		"Workflow Guard enforces safe engineering discipline and provides proactive workflow tools:",
+		"- Task Planning: Proactively call `guard_next_tasks` at session start or when planning work to discover repository roadmap, plan, and TODO items. Check `guard_status` to inspect branch protection, mutation count, and outstanding verification/review gates.",
+	];
+
+	if (!options.isReadOnly) {
+		sections.push(
+			"- Review & Verification: Before completing tasks or creating PRs, run tests to produce fresh verification evidence, retrieve the review rubric via `guard_review_rubric` (5 core axes: test integrity, task completeness, cleanliness, security, platform), and spawn a reviewer subagent via `task` that records its verdict with `record_review`.",
+			"- Worktree Isolation: When orchestrating parallel subagent tasks with `task`, call `guard_worktree_create` to prevent concurrent file conflicts, and `guard_worktree_cleanup` when finished.",
+		);
+	}
+
+	sections.push(
+		"- Technical Debt: Inspect open P2/P3 review follow-ups with `guard_review_followups` during planning; resolve fixed items with `guard_review_followup_resolve`.",
+		"- Policy Simulation: If uncertain whether a command or file edit is permitted, simulate it with `guard_why`.",
+	);
+
+	if (options.projectMemoryEnabled) {
+		sections.push(
+			"- Project Memory: Proactively call `project_memory_search` before architectural changes or complex implementations. Record durable lessons, architectural decisions, and repo constraints with `project_memory_record`.",
+		);
+	}
+
+	if (options.learningEnabled) {
+		sections.push(
+			"- Socratic Learning: When facing non-trivial architectural trade-offs, design choices, or debugging breakthroughs, call `learning_checkpoint`. If selected (intervene: true), ask one concise question via `question` before proceeding, and capture observed understanding with `learning_record`.",
+		);
+	}
+
+	if (options.recoveryCheckpointsEnabled) {
+		sections.push(
+			"- Recovery: If workspace state needs rollback to the pre-run checkpoint, use `guard_recovery_restore`.",
+		);
+	}
+
+	return sections.join("\n");
+}
+
 export function createCustomTools(options: {
 	effectiveRoot: string;
 	projectMemoryEnabled: boolean;
@@ -80,7 +125,7 @@ export function createCustomTools(options: {
 			}),
 		} : {}),
 		guard_next_tasks: tool({
-			description: "Load durable repository task context when deciding what to work on next. Prefers TODO.md; if absent, discovers conventional roadmap, plan, tasks, backlog, and docs/plans Markdown files.",
+			description: "Load durable repository task context when deciding what to work on next or planning upcoming steps. Proactively call at session start or during planning to discover roadmap, plan, tasks, backlog, and TODO.md files.",
 			args: {},
 			execute: async () => {
 				const sources = discoverPlanningSources(effectiveRoot);
@@ -89,12 +134,12 @@ export function createCustomTools(options: {
 		}),
 		...(projectMemoryEnabled ? {
 			project_memory_search: tool({
-				description: "Search current durable knowledge for this project. Returns concise typed records with provenance; superseded records are excluded.",
+				description: "Search current durable knowledge for this project, including past architectural decisions, constraints, and conventions. Proactively call before starting complex architectural changes, refactors, or new feature implementations.",
 				args: { query: tool.schema.string() },
 				execute: async (args) => projectMemory ? JSON.stringify(args.query.length <= 500 ? searchProjectMemory(projectMemory, args.query, 8) : [], null, 2) : "[workflow-guard] Project memory unavailable; core guard enforcement remains active.",
 			}),
 			project_memory_record: tool({
-				description: "Record a durable project fact, decision, constraint, or lesson when it will matter in future sessions. Do not record transient tool output, secrets, or speculative hypotheses.",
+				description: "Record a durable project fact, decision, constraint, or lesson when it will matter in future sessions. Proactively call after making important architectural choices, discovering tricky repo constraints, or establishing new patterns.",
 				args: { kind: tool.schema.string().describe("fact, decision, constraint, or lesson"), content: tool.schema.string(), paths: tool.schema.array(tool.schema.string()), supersedes: tool.schema.string().optional() },
 				execute: async (args, toolContext) => {
 					if (!projectMemory) return "[workflow-guard] Project memory unavailable; core guard enforcement remains active.";
@@ -105,7 +150,7 @@ export function createCustomTools(options: {
 				},
 			}),
 			project_memory_export: tool({
-				description: "Explicitly promote selected durable project-memory records to the human-readable repo-local .opencode/memory/project-memory.jsonl file. Nothing is exported automatically.",
+				description: "Explicitly promote selected durable project-memory records to the human-readable repo-local .opencode/memory/project-memory.jsonl file. Call when durable knowledge should be committed and shared with the team.",
 				args: { ids: tool.schema.array(tool.schema.string()) },
 				execute: async (args) => {
 					if (!projectMemory) return "[workflow-guard] Project memory unavailable; core guard enforcement remains active.";
@@ -114,12 +159,12 @@ export function createCustomTools(options: {
 					return `[workflow-guard] Exported ${count} project-memory record(s) to .opencode/memory/project-memory.jsonl.`;
 				},
 			}),
-			project_memory_import: tool({ description: "Import the fixed repo-local .opencode/memory/project-memory.jsonl file into this project's local working-memory index.", args: {}, execute: async () => projectMemory ? `[workflow-guard] Imported ${importProjectKnowledge(projectMemory, portableMemoryPath, (content) => secretIn(content) !== undefined)} new project-memory record(s).` : "[workflow-guard] Project memory unavailable; core guard enforcement remains active." }),
+			project_memory_import: tool({ description: "Import the repo-local .opencode/memory/project-memory.jsonl file into this project's local working-memory index. Call to synchronize local project memory with shared repository records.", args: {}, execute: async () => projectMemory ? `[workflow-guard] Imported ${importProjectKnowledge(projectMemory, portableMemoryPath, (content) => secretIn(content) !== undefined)} new project-memory record(s).` : "[workflow-guard] Project memory unavailable; core guard enforcement remains active." }),
 		} : {}),
 		...(learningEnabled ? {
-			learning_profile: tool({ description: "Inspect the local evidence-based learner profile so teaching can build on demonstrated knowledge without assuming unobserved concepts are gaps.", args: {}, execute: async () => JSON.stringify(loadLearnerProfile(), null, 2) }),
+			learning_profile: tool({ description: "Inspect the local evidence-based learner profile so explanations and teaching can build on demonstrated knowledge without assuming unobserved concepts are gaps.", args: {}, execute: async () => JSON.stringify(loadLearnerProfile(), null, 2) }),
 			learning_checkpoint: tool({
-				description: "At a high-value design decision, debugging moment, or important new concept, rank candidate Socratic learning opportunities. If one is selected, ask one concise question before continuing the work; do not turn routine syntax into a lesson.",
+				description: "At a high-value design decision, debugging moment, or important new concept, rank candidate Socratic learning opportunities. Proactively call when encountering non-trivial architectural trade-offs, design choices, or tricky bugs. If selected (intervene: true), ask one concise question via question before continuing; do not turn routine syntax into a lesson.",
 				args: { opportunities: tool.schema.array(tool.schema.object({ type: tool.schema.string().describe("design, debugging, or new-concept"), concept: tool.schema.string().describe("Transferable engineering concept"), relevance: tool.schema.number().describe("Current-task relevance from 0 to 1"), consequence: tool.schema.number().describe("Decision consequence from 0 to 1") })) },
 				execute: async (args, toolContext) => {
 					const valid = args.opportunities.slice(0, 20).filter((candidate): candidate is typeof candidate & { type: "design" | "debugging" | "new-concept" } => (candidate.type === "design" || candidate.type === "debugging" || candidate.type === "new-concept") && candidate.concept.length > 0 && candidate.concept.length <= 100 && candidate.relevance >= 0 && candidate.relevance <= 1 && candidate.consequence >= 0 && candidate.consequence <= 1);
@@ -131,7 +176,7 @@ export function createCustomTools(options: {
 				},
 			}),
 			learning_record: tool({
-				description: "Record concise evidence from a real Socratic interaction after observing the learner's reasoning. Record what was demonstrated, not a grade or an inferred deficit.",
+				description: "Record concise evidence from a real Socratic interaction after observing the learner's reasoning and response to a learning checkpoint question. Record what was demonstrated, not a grade or an inferred deficit.",
 				args: { concept: tool.schema.string(), kind: tool.schema.string().describe("exposed, developing, demonstrated, independent, critique, or needs-reinforcement"), summary: tool.schema.string().describe("Short factual description of observed reasoning") },
 				execute: async (args, toolContext) => {
 					const validKinds = new Set(["exposed", "developing", "demonstrated", "independent", "critique", "needs-reinforcement"]);
@@ -151,7 +196,7 @@ export function createCustomTools(options: {
 			}),
 		} : {}),
 		guard_status: tool({
-			description: "Inspect active guardrails, current branch protection, and verification/review status.", args: {},
+			description: "Inspect active guardrails, current branch protection, mutation count, outstanding verification/review requirements, and ralph status. Proactively call at session start and before completing tasks or creating PRs.", args: {},
 			execute: async (_args, toolContext) => {
 				const root = effectiveRoot; const branch = currentGitBranch(root) ?? "unknown"; const isProtected = onProtectedBranch(root); const lastV = getLastVerifyResultForWorkspace(root); const lastR = getLastReviewResultForWorkspace(root); const lastMut = getWorkspaceMutationTimestamp(root); const cfg = loadProjectConfig(root);
 				const subject = { workspace: projectRootKey(root), commitHash: getCurrentGitCommitHash(root), worktreeFingerprint: getGitWorktreeFingerprint(root) };
@@ -167,14 +212,32 @@ export function createCustomTools(options: {
 					...(reviewRequired && !reviewFresh ? ["review"] : []),
 					...(documentationRequired && !branchHasDocumentationChange(root) ? ["documentation"] : []),
 				];
+				const recommendedActions: string[] = [];
+				if (outstandingRequirements.includes("verification")) {
+					recommendedActions.push(verifyCommand ? `Execute test verification command '${verifyCommand}' to produce fresh verification evidence.` : "Run project tests to establish fresh verification evidence.");
+				}
+				if (outstandingRequirements.includes("review")) {
+					recommendedActions.push("Call guard_review_rubric to retrieve the 5-axis review rubric, then spawn a secondary reviewer subagent via task to evaluate changes and record verdict with record_review.");
+				}
+				if (outstandingRequirements.includes("documentation")) {
+					recommendedActions.push("Update documentation files (e.g. README.md, docs/) to satisfy the documentation gate before opening a PR.");
+				}
+				let openFollowupsCount = 0;
+				try { openFollowupsCount = followupStore ? listReviewFollowups(followupStore, "open", 10).length : 0; } catch {}
+				if (openFollowupsCount > 0) {
+					recommendedActions.push(`Inspect ${openFollowupsCount} open P2/P3 review follow-up(s) with guard_review_followups and resolve with guard_review_followup_resolve once addressed.`);
+				}
+				if (recommendedActions.length === 0) {
+					recommendedActions.push("All operational requirements are satisfied for task finalization and PR creation.");
+				}
 				const ralphOutcome = runWithRuntimeState(root, client, () => getRalphOutcome(toolContext.sessionID));
-				return JSON.stringify({ workspaceRoot: root, branch, onProtectedBranch: isProtected, outstandingRequirements, lastMutationTimestamp: lastMut, mutationCount: getWorkspaceMutationCount(root), lastVerify: lastV && verifyEvidence ? { command: lastV.command, passed: lastV.passed, fresh: verifyFresh, evidenceId: verifyEvidence.id, commitHash: lastV.commitHash } : null, lastReview: lastR && reviewEvidenceRecord ? { reviewer: lastR.reviewer, passed: lastR.passed, summary: lastR.summary, fresh: reviewFresh, evidenceId: reviewEvidenceRecord.id } : null, ralph: { enabled: isRalphModeEnabled(root), maxIterations: getRalphMaxIterations(root), outcome: ralphOutcome ?? null }, projectConfig: { profile: getOperationProfile(root), protectedBranches: cfg.protectedBranches ?? ["main", "master"], verifyCommand: verifyCommand ?? null, requireReview: reviewRequired, requireDocumentation: documentationRequired, recoveryCheckpoints: isRecoveryCheckpointsEnabled(root) } }, null, 2);
+				return JSON.stringify({ workspaceRoot: root, branch, onProtectedBranch: isProtected, outstandingRequirements, recommendedActions, lastMutationTimestamp: lastMut, mutationCount: getWorkspaceMutationCount(root), lastVerify: lastV && verifyEvidence ? { command: lastV.command, passed: lastV.passed, fresh: verifyFresh, evidenceId: verifyEvidence.id, commitHash: lastV.commitHash } : null, lastReview: lastR && reviewEvidenceRecord ? { reviewer: lastR.reviewer, passed: lastR.passed, summary: lastR.summary, fresh: reviewFresh, evidenceId: reviewEvidenceRecord.id } : null, ralph: { enabled: isRalphModeEnabled(root), maxIterations: getRalphMaxIterations(root), outcome: ralphOutcome ?? null }, projectConfig: { profile: getOperationProfile(root), protectedBranches: cfg.protectedBranches ?? ["main", "master"], verifyCommand: verifyCommand ?? null, requireReview: reviewRequired, requireDocumentation: documentationRequired, recoveryCheckpoints: isRecoveryCheckpointsEnabled(root) } }, null, 2);
 			},
 		}),
-		guard_audit: tool({ description: "View recent audit entries recorded by opencode-workflow-guard.", args: { limit: tool.schema.number().optional().describe("Maximum entries to return (default 10)") }, execute: async (args) => JSON.stringify(getRecentAuditEntries(typeof args?.limit === "number" ? Math.min(args.limit, 50) : 10), null, 2) }),
-		guard_why: tool({ description: "Simulate and return the structured policy decision for a specific tool call or command.", args: { tool: tool.schema.string().describe("Tool name (e.g. bash, edit, write, read, apply_patch)"), input: tool.schema.record(tool.schema.string(), tool.schema.any()).optional().describe("Tool input arguments") }, execute: async (args, toolContext) => JSON.stringify(await runWithRuntimeState(effectiveRoot, client, () => guardToolCallImpl(args.tool, args.input ?? {}, { sessionID: toolContext.sessionID, worktree: toolContext.worktree, directory: toolContext.directory, simulate: true })), null, 2) }),
+		guard_audit: tool({ description: "View recent audit entries recorded by opencode-workflow-guard. Use to diagnose policy decisions, blocked commands, or outcome telemetry.", args: { limit: tool.schema.number().optional().describe("Maximum entries to return (default 10)") }, execute: async (args) => JSON.stringify(getRecentAuditEntries(typeof args?.limit === "number" ? Math.min(args.limit, 50) : 10), null, 2) }),
+		guard_why: tool({ description: "Simulate and return the structured policy decision for a specific tool call or command. Proactively use before executing questionable or complex commands to check if they would be blocked by guard policies.", args: { tool: tool.schema.string().describe("Tool name (e.g. bash, edit, write, read, apply_patch)"), input: tool.schema.record(tool.schema.string(), tool.schema.any()).optional().describe("Tool input arguments") }, execute: async (args, toolContext) => JSON.stringify(await runWithRuntimeState(effectiveRoot, client, () => guardToolCallImpl(args.tool, args.input ?? {}, { sessionID: toolContext.sessionID, worktree: toolContext.worktree, directory: toolContext.directory, simulate: true })), null, 2) }),
 		record_review: tool({
-			description: "Record a secondary reviewer agent's approval or critique of the current changes. The summary must reference the 5 core review axes from guard_review_rubric.",
+			description: "Record a secondary reviewer agent's approval or critique of the current changes. The summary must reference the 5 core review axes from guard_review_rubric (test integrity, task completeness, cleanliness, security, platform).",
 			args: { reviewer: tool.schema.string().describe("Identifier/name of the reviewer subagent"), summary: tool.schema.string().describe("Review findings summary across the 5 core review axes"), passed: tool.schema.boolean().describe("True if change is approved, false if changes requested") },
 			execute: async (args, toolContext) => {
 				const auditVerdict = (verdict: "approved" | "changes_requested" | "rejected", reason: string) => audit({ ts: new Date().toISOString(), sessionID: toolContext.sessionID, tool: "record_review.verdict", decision: verdict === "rejected" ? "block" : "allow", phase: "event", reason, evidence: { reviewVerdict: verdict } });
@@ -190,10 +253,10 @@ export function createCustomTools(options: {
 				return args.passed ? `[workflow-guard] Review recorded as APPROVED by ${args.reviewer}.` : `[workflow-guard] Review recorded as CHANGES REQUESTED by ${args.reviewer}.`;
 			},
 		}),
-		guard_review_followups: tool({ description: "List durable local P2/P3 review follow-ups for this project. Open findings are technical debt that should be addressed rather than indefinitely deferred.", args: {}, execute: async () => JSON.stringify(followupStore ? listReviewFollowups(followupStore) : [], null, 2) }),
+		guard_review_followups: tool({ description: "List durable local P2/P3 review follow-ups (technical debt) for this project. Proactively check during planning or before final verification to address open findings.", args: {}, execute: async () => JSON.stringify(followupStore ? listReviewFollowups(followupStore) : [], null, 2) }),
 		guard_review_followup_resolve: tool({ description: "Resolve a durable local review follow-up after the underlying issue has been fixed and verified.", args: { id: tool.schema.string() }, execute: async (args) => followupStore && resolveReviewFollowup(followupStore, args.id) ? `[workflow-guard] Review follow-up ${args.id} resolved.` : `[workflow-guard] Review follow-up ${args.id} was not open or was not found.` }),
 		guard_review_rubric: tool({
-			description: "Get the secondary-review rubric for the current branch diff. The orchestrator calls this, spawns a reviewer subagent with the rubric as the prompt, then the reviewer records its verdict via record_review.", args: { base: tool.schema.string().optional().describe("Base ref to diff against (default: origin/main, origin/master, main)") },
+			description: "Get the secondary-review rubric for the current branch diff across 5 core review axes (test integrity, task completeness, cleanliness, security, platform). The orchestrator should call this before finalizing work or creating a PR, then spawn a reviewer subagent with the rubric as the prompt, which records its verdict via record_review.", args: { base: tool.schema.string().optional().describe("Base ref to diff against (default: origin/main, origin/master, main)") },
 			execute: async (args) => {
 				const sanitizedBase = typeof args.base === "string" && !args.base.startsWith("-") && !/[\s;'"\0]/.test(args.base) ? args.base : undefined;
 				const bases = sanitizedBase ? [sanitizedBase] : ["origin/main", "origin/master", "main", "master"];
@@ -204,7 +267,7 @@ export function createCustomTools(options: {
 			},
 		}),
 		guard_worktree_create: tool({
-			description: "Create an isolated git worktree directory for concurrent subagent execution.", args: { branch: tool.schema.string().describe("Branch name for the isolated worktree (e.g. 'feat/subagent-task')"), baseBranch: tool.schema.string().optional().describe("Base branch to branch off of (defaults to HEAD)") },
+			description: "Create an isolated git worktree directory for concurrent subagent execution. Proactively call when launching parallel tasks/subagents to prevent file collision and maintain branch isolation.", args: { branch: tool.schema.string().describe("Branch name for the isolated worktree (e.g. 'feat/subagent-task')"), baseBranch: tool.schema.string().optional().describe("Base branch to branch off of (defaults to HEAD)") },
 			execute: async (args, toolContext) => {
 				const todos = await effectiveTodos(toolContext.sessionID); if (todos !== undefined && !hasActiveTodo(todos)) return "[workflow-guard] Blocked: worktree creation with no active todo item. Break the request down with todowrite first, then create worktrees.";
 				const toolRoot = toolContext.worktree || toolContext.directory || effectiveRoot; const res = createGitWorktree(args.branch, args.baseBranch ?? "HEAD", toolRoot); if (!res.success) return `[workflow-guard] Failed to create worktree: ${res.error}`;
@@ -212,7 +275,7 @@ export function createCustomTools(options: {
 			},
 		}),
 		guard_worktree_cleanup: tool({
-			description: "Commit a final snapshot and remove an isolated git worktree directory.", args: { worktreePath: tool.schema.string().describe("Path of the worktree directory to clean up") },
+			description: "Commit a final snapshot and remove an isolated git worktree directory. Call to clean up worktrees created with guard_worktree_create after subagent tasks complete.", args: { worktreePath: tool.schema.string().describe("Path of the worktree directory to clean up") },
 			execute: async (args, toolContext) => {
 				const todos = await effectiveTodos(toolContext.sessionID); if (todos !== undefined && !hasActiveTodo(todos)) return "[workflow-guard] Blocked: worktree cleanup with no active todo item. Break the request down with todowrite first, then clean up worktrees.";
 				const toolRoot = toolContext.worktree || toolContext.directory || effectiveRoot; const res = cleanupGitWorktree(args.worktreePath, toolRoot); if (!res.success) return `[workflow-guard] Failed to clean up worktree: ${res.error}`;

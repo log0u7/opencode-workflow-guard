@@ -27,7 +27,7 @@
 - Block reasons must keep flowing to `client.app.log()` at warn level via `logBlock` (the modularization accidentally no-op'd it once); toasts via `tui.showToast` are for the TUI, app logs are for the durable in-app trail.
 - The single-task focus rule was intentionally removed from Policy 1: multiple tasks may be `in_progress` concurrently so subagents can parallelize. Only "no silent deletion" and the all-done verification gate remain.
 - Policy 24 (claims-vs-evidence) lives in `src/policies/completion.ts` and is observability-only: the `experimental.text.complete` hook journals mismatches between completion claims and verification evidence; it must never block or mutate `output.text`.
-- The `tool.definition` hook is used only to keep tool descriptions honest (currently: `todowrite`'s finalization-gate note). Do not use it to inject instructions — that would reintroduce prompt rules.
+- The `tool.definition` hook keeps tool descriptions honest and actionable (`todowrite`'s lifecycle and gate notes, mutating tool preconditions, and `task` subagent guidance). Operational steering is provided via tool definitions, `experimental.chat.system.transform`, and synthetic continuation hints while deterministic enforcement remains strictly hook-based.
 
 ## PR And Release Gates
 - Scope PRs by subsystem or cohesive behavioral concern, not by individual `TODO.md` entries. Multiple planning entries that implement one coherent behavior belong in the same PR when that produces the clearer review boundary.

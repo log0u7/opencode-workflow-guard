@@ -18,10 +18,10 @@ import { beginReadObservation, clearReadFingerprints, recordSuccessfulRead, stal
 import { ToolInvocationLifecycle } from "./lib/tool-lifecycle.ts";
 import { ToolOutcomeTracker, type ToolOutcomePart } from "./lib/tool-outcomes.ts";
 import { guardToolCallImpl, isReadOnlyRole } from "./lib/guard-dispatcher.ts";
-import { createCustomTools } from "./lib/custom-tools.ts";
+import { createCustomTools, buildWorkflowGuardSystemGuidance } from "./lib/custom-tools.ts";
 import type { PolicyDecision, TodoSdkClient } from "./lib/types.ts";
 export { isReadOnlyRole } from "./lib/guard-dispatcher.ts";
-export { extractReviewFollowups } from "./lib/custom-tools.ts";
+export { extractReviewFollowups, buildWorkflowGuardSystemGuidance } from "./lib/custom-tools.ts";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 export type {
@@ -345,6 +345,24 @@ async function emitBlockFeedback(message: string): Promise<void> {
 	await showBlockToast(message);
 }
 
+export function buildCompactionContext(operationalState: string, priorityBlocks: string[], maxChars = 8_000): string {
+	if (!Number.isFinite(maxChars) || maxChars < 0 || !Number.isInteger(maxChars)) {
+		throw new RangeError("maxChars must be a non-negative finite integer");
+	}
+	const truncate = (value: string, limit: number): string => {
+		let end = Math.min(value.length, limit);
+		if (end > 0 && end < value.length && /[\uD800-\uDBFF]/.test(value[end - 1])) end -= 1;
+		return value.slice(0, end);
+	};
+	let context = truncate(operationalState, maxChars);
+	for (const block of priorityBlocks) {
+		const remaining = maxChars - context.length - 2;
+		if (remaining <= 0) break;
+		context += `\n\n${truncate(block, remaining)}`;
+	}
+	return context;
+}
+
 export const WorkflowGuard: Plugin = async (ctx) => {
 	// Honor worktree if present (e.g. opencode worktrees or devcontainers)
 	// so worktree plugins cannot punch through boundary gates. When the host
@@ -416,7 +434,7 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 					await emitBlockFeedback(reason);
 					const failureCount = input.sessionID ? toolOutcomes.getFailureCount(input.sessionID) : 0;
 					const circuitBreakerSuffix = failureCount >= 2
-						? "\n\n[Workflow Guard Circuit Breaker: Repeated failures detected in this session. Stop attempting alternative workarounds or shell laundering. Address the required step above directly.]"
+						? "\n\n[Workflow Guard Circuit Breaker: Repeated failures detected in this session. Stop attempting alternative workarounds or shell laundering. Address the required step above directly, or inspect policy details with guard_status or guard_why.]"
 						: "";
 					throw new Error(`[workflow-guard] ${reason}${circuitBreakerSuffix}`);
 				}
@@ -484,7 +502,7 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 					: getLastReviewResult();
 				const mutationCountVal = sessionID ? sessionMutationCount : getMutationCount();
 
-				const contextBlocks: string[] = [];
+				const priorityContextBlocks: string[] = [];
 
 				if (active && active.length > 0) {
 					const lines = active.slice(0, 20).map(
@@ -497,7 +515,7 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 						: sessionID
 							? ` (Session: ${sessionID})`
 							: "";
-					contextBlocks.push(
+					priorityContextBlocks.push(
 						`## Active Tasks${attribution}\n` +
 							lines.join("\n") +
 							"\nComplete tasks efficiently - mark finished items as completed and address remaining ones.",
@@ -523,9 +541,9 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 				try { openFollowups = followupStore ? listReviewFollowups(followupStore, "open", 8) : []; } catch {}
 				if (openFollowups.length > 0) {
 					stateLines.push(`- Open Review Follow-ups: ${openFollowups.length} local P2/P3 item(s)`);
-					contextBlocks.push(`## Review Follow-ups\n${openFollowups.map((item) => `- [${item.severity}:${item.id.slice(0, 8)}] ${item.summary.slice(0, 300)}`).join("\n")}\nTreat these as durable technical debt: address relevant items when practical and resolve them explicitly after verification.`);
+					priorityContextBlocks.push(`## Review Follow-ups\n${openFollowups.map((item) => `- [${item.severity}:${item.id.slice(0, 8)}] ${item.summary.slice(0, 300)}`).join("\n")}\nTreat these as durable technical debt: address relevant items when practical and resolve them explicitly after verification.`);
 				}
-				contextBlocks.push(stateLines.join("\n"));
+				const operationalState = stateLines.join("\n");
 				let projectKnowledge: ReturnType<typeof getRecentProjectMemory> = [];
 				try {
 					const candidates = (projectMemory ? getRecentProjectMemory(projectMemory, 8) : [])
@@ -535,11 +553,11 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 				} catch {}
 				if (projectKnowledge.length > 0) {
 					const lines = projectKnowledge.map((memory) => `- [${memory.kind}:${memory.id.slice(0, 8)}] ${memory.content.slice(0, 300)}`);
-					contextBlocks.push(`## Project Memory\n${lines.join("\n")}\nTreat these as historical project knowledge; verify against current repository state when relevant files have changed.`);
+					priorityContextBlocks.push(`## Project Memory\nUse project_memory_search when deeper historical context is needed. Treat these as historical project knowledge; verify against current repository state when relevant files have changed.\n${lines.join("\n")}`);
 				}
 
 				if (Array.isArray(output?.context)) {
-					output.context.push(contextBlocks.join("\n\n"));
+					output.context.push(buildCompactionContext(operationalState, priorityContextBlocks));
 				}
 			} catch {}
 		},
@@ -611,13 +629,14 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 		// Keep tool descriptions honest: todowrite's description reflects lifecycle
 		// and finalization gates so the model is not surprised by preventable blocks.
 		// Similarly, mutating tools reflect their active-todo, feature-branch, and prior-read requirements.
+		// Subagent orchestration tools reflect worktree isolation and review expectations.
 		"tool.definition": async (input, output) => {
 			if (input.toolID === "todowrite") {
 				const description = typeof output.description === "string" ? output.description : "";
 				if (description.includes("verification evidence")) return;
 				output.description =
 					description +
-					"\n\nWorkflow Guard lifecycle: each todowrite call replaces the complete task list. Preserve every pending/in_progress task in subsequent updates until you explicitly mark it completed or cancelled; do not omit active tasks when adding new work. Marking every task completed triggers the finalization gate - fresh verification evidence (test run) is required after the last mutation, and protected-branch/conflict checks apply.";
+					"\n\nWorkflow Guard lifecycle: each todowrite call replaces the complete task list. Preserve every pending/in_progress task in subsequent updates until you explicitly mark it completed or cancelled; do not omit active tasks when adding new work. Marking every task completed triggers the finalization gate - fresh verification evidence (test run) is required after the last mutation, and protected-branch/conflict checks apply. Proactively call guard_next_tasks when planning work to discover existing roadmap/TODOs, and guard_status to check outstanding requirements.";
 				return;
 			}
 			if (EDIT_TOOL_NAMES.has(input.toolID)) {
@@ -628,6 +647,30 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 					"\n\nWorkflow Guard requirement: Modifications require an active task in todowrite (status pending or in_progress), a feature branch (edits on main/master are blocked), and a prior read of existing files in the current session.";
 				return;
 			}
+			if (input.toolID === "task") {
+				const description = typeof output.description === "string" ? output.description : "";
+				if (description.includes("Workflow Guard subagent guidance")) return;
+				output.description =
+					description +
+					"\n\nWorkflow Guard subagent guidance: When spawning parallel worker subagents, use guard_worktree_create to isolate file mutations in separate worktrees. When conducting code reviews before task completion or PR creation, fetch the rubric with guard_review_rubric and provide it to a reviewer subagent to evaluate and record via record_review.";
+				return;
+			}
+		},
+
+		"experimental.chat.system.transform": async (input, output) => {
+			try {
+				if (!Array.isArray(output?.system)) return;
+				const existing = output.system.join("\n");
+				if (existing.includes("## Workflow Guard & Operational Tools")) return;
+				const isReadOnly = (input as { agent?: string })?.agent ? isReadOnlyRole((input as { agent?: string }).agent!) : false;
+				const guidance = buildWorkflowGuardSystemGuidance({
+					projectMemoryEnabled,
+					learningEnabled,
+					recoveryCheckpointsEnabled: isRecoveryCheckpointsEnabled(effectiveRoot),
+					isReadOnly,
+				});
+				output.system.push(guidance);
+			} catch {}
 		},
 
 		"chat.message": async (input) => {
