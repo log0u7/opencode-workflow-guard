@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ToolOutcome } from "./tool-outcomes.ts";
 import type { EvidenceRecord, EvidenceSubject, PolicyDecision, ReviewResult, VerifyResult } from "./types.ts";
+import { isSameGitRepo } from "./project-config.ts";
 
 function evidenceId(kind: EvidenceRecord["kind"], observedAt: number, subject: EvidenceRecord["subject"], source: Record<string, unknown>): string {
 	return createHash("sha256").update(JSON.stringify({ kind, observedAt, subject, source })).digest("hex");
@@ -40,7 +41,11 @@ export function agentAssertionEvidence(assertion: string, observedAt: number, su
 }
 
 export function evidenceMatchesSubject(evidence: EvidenceRecord, subject: EvidenceSubject): boolean {
-	return evidence.subject.workspace === subject.workspace &&
+	const workspaceMatches =
+		evidence.subject.workspace === subject.workspace ||
+		(Boolean(evidence.subject.workspace && subject.workspace) &&
+			isSameGitRepo(evidence.subject.workspace, subject.workspace));
+	return workspaceMatches &&
 		evidence.subject.commitHash === subject.commitHash &&
 		evidence.subject.worktreeFingerprint === subject.worktreeFingerprint &&
 		evidence.subject.sessionID === subject.sessionID;

@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Database, type SqliteDatabase } from "./sqlite.ts";
-import type { AuditEntry, PolicyDecision, VerifyResult } from "./types.ts";
+import type { AuditEntry, PolicyDecision, VerifyResult, ReviewResult } from "./types.ts";
 import { asRecord } from "./utils.ts";
 
 const AUDIT_DIR = join(
@@ -14,6 +14,7 @@ const AUDIT_DIR = join(
 const AUDIT_FILE = join(AUDIT_DIR, "workflow-guard.jsonl");
 const VERIFY_CACHE_FILE = join(AUDIT_DIR, "last-verify.json");
 const VERIFY_HISTORY_FILE = join(AUDIT_DIR, "verify-history.jsonl");
+const REVIEW_CACHE_FILE = join(AUDIT_DIR, "last-review.json");
 const MAX_AUDIT_BYTES = 4 * 1024 * 1024;
 const RETAIN_AUDIT_BYTES = 2 * 1024 * 1024;
 const MAX_VERIFY_HISTORY_BYTES = 1024 * 1024;
@@ -60,6 +61,10 @@ export function getVerifyCacheFilePath(): string {
 
 export function getVerifyHistoryFilePath(): string {
 	return VERIFY_HISTORY_FILE;
+}
+
+export function getReviewCacheFilePath(): string {
+	return REVIEW_CACHE_FILE;
 }
 
 function appendBoundedJsonlUnlocked(path: string, value: unknown, maxBytes: number, retainBytes: number): void {
@@ -150,6 +155,33 @@ export function loadVerifyCache(): VerifyResult | undefined {
 		const raw = readFileSync(VERIFY_CACHE_FILE, "utf8");
 		const data = JSON.parse(raw);
 		if (data && typeof data.command === "string" && typeof data.timestamp === "number") {
+			return data;
+		}
+	} catch {}
+	return undefined;
+}
+
+/**
+ * Persists passing secondary review approval to disk so session restarts
+ * or multi-agent handoffs retain valid review approval state.
+ */
+export function persistReviewCache(reviewData: ReviewResult): void {
+	try {
+		mkdirSync(AUDIT_DIR, { recursive: true });
+		writeFileSync(REVIEW_CACHE_FILE, JSON.stringify(reviewData, null, 2), { encoding: "utf8", mode: 0o600 });
+		chmodSync(REVIEW_CACHE_FILE, 0o600);
+	} catch {}
+}
+
+/**
+ * Loads durable review approval from disk if present.
+ */
+export function loadReviewCache(): ReviewResult | undefined {
+	try {
+		if (!existsSync(REVIEW_CACHE_FILE)) return undefined;
+		const raw = readFileSync(REVIEW_CACHE_FILE, "utf8");
+		const data = JSON.parse(raw);
+		if (data && typeof data.reviewer === "string" && typeof data.timestamp === "number" && typeof data.passed === "boolean") {
 			return data;
 		}
 	} catch {}

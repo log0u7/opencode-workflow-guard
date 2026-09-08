@@ -73,7 +73,7 @@ export async function continueUnfinishedSession(sessionID: string, settleTitle =
 		const session = getSdkClient()?.session;
 		if (typeof session?.promptAsync !== "function") return false;
 
-		const messageID = `workflow-guard-${randomUUID()}`;
+		const messageID = `msg_wg_${randomUUID().replace(/-/g, "")}`;
 		state.counts.set(sessionID, count + 1);
 		if (ralph) state.ralphOutcomes.set(sessionID, "running");
 		const generatedIDs = state.generatedMessageIDs.get(sessionID) ?? new Set<string>();
