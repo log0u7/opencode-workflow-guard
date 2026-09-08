@@ -1902,7 +1902,6 @@ check("guard_status exposes bounded outstanding requirements", Array.isArray(par
 check("guard_status exposes actionable recommended actions", Array.isArray(parsedStatus.recommendedActions) && parsedStatus.recommendedActions.length > 0);
 check("guard_next_tasks description includes proactive trigger", Boolean(customPlugin.tool?.guard_next_tasks?.description.includes("Proactively call")));
 check("project_memory_search description includes proactive trigger", Boolean(customPlugin.tool?.project_memory_search?.description?.includes("Proactively call")));
-check("learning_checkpoint description includes proactive trigger", Boolean(customPlugin.tool?.learning_checkpoint?.description?.includes("Proactively call")));
 check("guard_review_rubric description includes orchestrator trigger", Boolean(customPlugin.tool?.guard_review_rubric?.description?.includes("orchestrator should call")));
 
 const requirementsRoot = mkdtempSync(join(tmpdir(), "wg-status-requirements-"));
@@ -3312,6 +3311,7 @@ const learningPlugin = await WorkflowGuard({ directory: root, worktree: root, cl
 check("learning mode registers profile tool when explicitly enabled", !!learningPlugin.tool?.learning_profile);
 check("learning mode registers adaptive checkpoint tool", !!learningPlugin.tool?.learning_checkpoint);
 check("learning mode registers evidence recorder", !!learningPlugin.tool?.learning_record);
+check("learning_checkpoint description includes proactive trigger", Boolean(learningPlugin.tool?.learning_checkpoint?.description?.includes("Proactively call")));
 const checkpointResult = JSON.parse(await (learningPlugin.tool as any).learning_checkpoint.execute({
 	opportunities: [{ type: "design", concept: "application-state", relevance: 1, consequence: 0.9 }],
 }, { sessionID: "s-learning-tools" }));
