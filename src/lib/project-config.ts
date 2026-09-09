@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+import { spawnSync } from "node:child_process";
 import type { ProjectConfig } from "./types.ts";
 
 const projectConfigCache = new Map<string, ProjectConfig>();
@@ -10,6 +11,55 @@ export function projectRootKey(root: string): string {
 	} catch {
 		return resolve(root);
 	}
+}
+
+export function findGitRoot(startPath?: string): string | undefined {
+	if (!startPath || typeof startPath !== "string") return undefined;
+	try {
+		const resolved = resolve(startPath);
+		let dir = resolved;
+		try {
+			const stat = statSync(resolved);
+			dir = stat.isDirectory() ? resolved : dirname(resolved);
+		} catch {
+			dir = dirname(resolved);
+		}
+		const res = spawnSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
+			encoding: "utf8",
+			timeout: 5_000,
+		});
+		if (res.status === 0 && res.stdout.trim()) {
+			return projectRootKey(res.stdout.trim());
+		}
+	} catch {}
+	return undefined;
+}
+
+export function getGitCommonDir(root: string): string | undefined {
+	try {
+		const res = spawnSync("git", ["-C", root, "rev-parse", "--path-format=absolute", "--git-common-dir"], {
+			encoding: "utf8",
+			timeout: 5_000,
+		});
+		if (res.status === 0 && res.stdout.trim()) {
+			return projectRootKey(res.stdout.trim());
+		}
+	} catch {}
+	return undefined;
+}
+
+export function isSameGitRepo(pathA?: string, pathB?: string): boolean {
+	if (!pathA || !pathB) return false;
+	const keyA = projectRootKey(pathA);
+	const keyB = projectRootKey(pathB);
+	if (keyA === keyB) return true;
+	const commonA = getGitCommonDir(keyA);
+	const commonB = getGitCommonDir(keyB);
+	if (commonA && commonB && commonA === commonB) return true;
+	const rootA = findGitRoot(keyA);
+	const rootB = findGitRoot(keyB);
+	if (rootA && rootB && rootA === rootB) return true;
+	return false;
 }
 
 export function projectConfigCandidates(root: string): string[] {

@@ -74,10 +74,14 @@ import {
 	getLearningInterventionBudget,
 	recordReviewResult,
 	getLastReviewResult,
+	getLastReviewResultForWorkspace,
 	resetReviewState,
 	sessionReviews,
+	setSessionWorkspace,
+	getSessionWorkspace,
+	resolveEffectiveWorkspace,
 } from "./lib/state.ts";
-import { loadProjectConfig, reloadProjectConfig, stripJsonComments } from "./lib/project-config.ts";
+import { findGitRoot, isSameGitRepo, loadProjectConfig, reloadProjectConfig, stripJsonComments } from "./lib/project-config.ts";
 
 export {
 	setWorkspaceRoot,
@@ -101,11 +105,18 @@ export {
 	getLearningInterventionBudget,
 	recordReviewResult,
 	getLastReviewResult,
+	getLastReviewResultForWorkspace,
 	resetReviewState,
+	setSessionWorkspace,
+	getSessionWorkspace,
+	resolveEffectiveWorkspace,
+	findGitRoot,
+	isSameGitRepo,
 };
 
 // ── Shared shell/env utilities ───────────────────────────────────────────────
 import {
+	asRecord,
 	extractRecordTargetPath,
 	getCleanEnv,
 	showBlockToast,
@@ -149,14 +160,17 @@ import { ensureProjectMemoryExcluded, getProjectMemoryIdentity, getRecentProject
 import {
 	getAuditFilePath,
 	getVerifyCacheFilePath,
+	getReviewCacheFilePath,
 	persistVerifyCache,
 	loadVerifyCache,
+	persistReviewCache,
+	loadReviewCache,
 	audit,
 	logDecision,
 	summarizeInput,
 } from "./lib/audit.ts";
 
-export { getAuditFilePath, getVerifyCacheFilePath, getVerifyHistoryFilePath, persistVerifyCache, loadVerifyCache, getRecentAuditEntries, getRecentVerifyHistory } from "./lib/audit.ts";
+export { getAuditFilePath, getVerifyCacheFilePath, getReviewCacheFilePath, getVerifyHistoryFilePath, persistVerifyCache, loadVerifyCache, persistReviewCache, loadReviewCache, getRecentAuditEntries, getRecentVerifyHistory } from "./lib/audit.ts";
 export { summarizeInput };
 
 export function managedConfigDiagnostic(platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
@@ -369,9 +383,16 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 	// reports the filesystem root, use the SDK's actual project worktree instead.
 	const hostRoot = ctx.worktree || ctx.directory || process.cwd();
 	const hostIsFilesystemRoot = resolve(hostRoot) === resolve(hostRoot, "..");
-	const effectiveRoot = hostIsFilesystemRoot && ctx.project?.worktree
+	let effectiveRoot = hostIsFilesystemRoot && ctx.project?.worktree && resolve(ctx.project.worktree) !== resolve(ctx.project.worktree, "..")
 		? ctx.project.worktree
 		: hostRoot;
+	if (resolve(effectiveRoot) === resolve(effectiveRoot, "..")) {
+		const nonRootCandidate = [ctx.directory, process.cwd()].find((p) => typeof p === "string" && resolve(p) !== resolve(p, ".."));
+		if (nonRootCandidate) {
+			const gitRoot = findGitRoot(nonRootCandidate);
+			effectiveRoot = gitRoot ?? nonRootCandidate;
+		}
+	}
 	setWorkspaceRoot(effectiveRoot);
 	setSdkClient(ctx.client);
 	reloadProjectConfig(effectiveRoot);
@@ -439,6 +460,16 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 					throw new Error(`[workflow-guard] ${reason}${circuitBreakerSuffix}`);
 				}
 				toolLifecycle.start(input.sessionID, input.callID);
+				if (input.sessionID) {
+					const record = asRecord(args);
+					const workdir = typeof record?.workdir === "string" ? record.workdir : undefined;
+					const filePath = typeof record?.filePath === "string" ? record.filePath : (typeof record?.path === "string" ? record.path : undefined);
+					const candidatePath = workdir ?? filePath ?? toolWorktree;
+					if (candidatePath) {
+						const gitRoot = findGitRoot(candidatePath);
+						if (gitRoot) setSessionWorkspace(input.sessionID, gitRoot);
+					}
+				}
 				if (input.tool === "read") {
 					const target = editTargets(args, toolWorktree)[0];
 					if (target) {

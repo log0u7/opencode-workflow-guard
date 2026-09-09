@@ -29,6 +29,7 @@ import {
 	isReviewRequired,
 	recordMutation,
 	recordReviewResult,
+	resolveEffectiveWorkspace,
 	runWithRuntimeState,
 } from "./state.ts";
 import { getRalphOutcome } from "../policies/continuation.ts";
@@ -46,11 +47,19 @@ import { currentGitBranch, onProtectedBranch } from "../policies/git.ts";
 import { effectiveTodoOwnerSessionID, effectiveTodos, fetchParentSession, fetchParentSessionID, hasActiveTodo } from "../policies/todo.ts";
 
 export function extractReviewFollowups(summary: string): Array<{ severity: "P2" | "P3"; summary: string }> {
-	return summary.split(/\r?\n/).map((line) => ({
-		line: line.trim(),
-		severity: line.match(/(?:^|\s)(P[23])(?:\b|[:])/i)?.[1]?.toUpperCase() as "P2" | "P3" | undefined,
-	})).filter((finding): finding is { line: string; severity: "P2" | "P3" } => Boolean(finding.line && finding.severity))
-		.map((finding) => ({ severity: finding.severity, summary: finding.line }));
+	return summary.split(/\r?\n/).map((line) => {
+		const trimmed = line.trim();
+		const match = trimmed.match(/(?:^|\s)(P[23])(?:\b|[:])/i);
+		const severity = match?.[1]?.toUpperCase() as "P2" | "P3" | undefined;
+		return { line: trimmed, severity };
+	}).filter((finding): finding is { line: string; severity: "P2" | "P3" } => {
+		if (!finding.line || !finding.severity) return false;
+		const rest = finding.line.replace(new RegExp(`^.*?(?:${finding.severity})\\s*[:\\-]?\\s*`, "i"), "").trim();
+		if (!rest || /^(?:none|nil|n\/?a|0|zero|no\s+(?:issues|findings|defects|items|blockers)|clean|passed|ok|none\s+identified)\b/i.test(rest)) {
+			return false;
+		}
+		return true;
+	}).map((finding) => ({ severity: finding.severity, summary: finding.line }));
 }
 
 export function buildWorkflowGuardSystemGuidance(options: {
@@ -196,9 +205,13 @@ export function createCustomTools(options: {
 			}),
 		} : {}),
 		guard_status: tool({
-			description: "Inspect active guardrails, current branch protection, mutation count, outstanding verification/review requirements, and ralph status. Proactively call at session start and before completing tasks or creating PRs.", args: {},
-			execute: async (_args, toolContext) => {
-				const root = effectiveRoot; const branch = currentGitBranch(root) ?? "unknown"; const isProtected = onProtectedBranch(root); const lastV = getLastVerifyResultForWorkspace(root); const lastR = getLastReviewResultForWorkspace(root); const lastMut = getWorkspaceMutationTimestamp(root); const cfg = loadProjectConfig(root);
+			description: "Inspect active guardrails, current branch protection, mutation count, outstanding verification/review requirements, and ralph status. Proactively call at session start and before completing tasks or creating PRs.",
+			args: {
+				directory: tool.schema.string().optional().describe("Target repository directory to inspect (defaults to active session directory or workspace root)"),
+			},
+			execute: async (args, toolContext) => {
+				const root = await resolveEffectiveWorkspace({ sessionID: toolContext.sessionID, directory: args?.directory, fallback: toolContext.worktree || toolContext.directory || effectiveRoot });
+				const branch = currentGitBranch(root) ?? "unknown"; const isProtected = onProtectedBranch(root); const lastV = getLastVerifyResultForWorkspace(root); const lastR = getLastReviewResultForWorkspace(root); const lastMut = getWorkspaceMutationTimestamp(root); const cfg = loadProjectConfig(root);
 				const subject = { workspace: projectRootKey(root), commitHash: getCurrentGitCommitHash(root), worktreeFingerprint: getGitWorktreeFingerprint(root) };
 				const verifyEvidence = lastV ? verificationEvidence(lastV) : undefined;
 				const reviewEvidenceRecord = lastR ? reviewEvidence(lastR) : undefined;
@@ -238,7 +251,12 @@ export function createCustomTools(options: {
 		guard_why: tool({ description: "Simulate and return the structured policy decision for a specific tool call or command. Proactively use before executing questionable or complex commands to check if they would be blocked by guard policies.", args: { tool: tool.schema.string().describe("Tool name (e.g. bash, edit, write, read, apply_patch)"), input: tool.schema.record(tool.schema.string(), tool.schema.any()).optional().describe("Tool input arguments") }, execute: async (args, toolContext) => JSON.stringify(await runWithRuntimeState(effectiveRoot, client, () => guardToolCallImpl(args.tool, args.input ?? {}, { sessionID: toolContext.sessionID, worktree: toolContext.worktree, directory: toolContext.directory, simulate: true })), null, 2) }),
 		record_review: tool({
 			description: "Record a secondary reviewer agent's approval or critique of the current changes. The summary must reference the 5 core review axes from guard_review_rubric (test integrity, task completeness, cleanliness, security, platform).",
-			args: { reviewer: tool.schema.string().describe("Identifier/name of the reviewer subagent"), summary: tool.schema.string().describe("Review findings summary across the 5 core review axes"), passed: tool.schema.boolean().describe("True if change is approved, false if changes requested") },
+			args: {
+				reviewer: tool.schema.string().describe("Identifier/name of the reviewer subagent"),
+				summary: tool.schema.string().describe("Review findings summary across the 5 core review axes"),
+				passed: tool.schema.boolean().describe("True if change is approved, false if changes requested"),
+				directory: tool.schema.string().optional().describe("Target repository directory being reviewed (defaults to parent session's repository or active directory)"),
+			},
 			execute: async (args, toolContext) => {
 				const auditVerdict = (verdict: "approved" | "changes_requested" | "rejected", reason: string) => audit({ ts: new Date().toISOString(), sessionID: toolContext.sessionID, tool: "record_review.verdict", decision: verdict === "rejected" ? "block" : "allow", phase: "event", reason, evidence: { reviewVerdict: verdict } });
 				const parentSessionID = await runWithRuntimeState(effectiveRoot, client, () => fetchParentSessionID(toolContext.sessionID));
@@ -247,8 +265,9 @@ export function createCustomTools(options: {
 				const referenced = axesRefs.filter((axis) => args.summary.toLowerCase().includes(axis));
 				if (referenced.length < 3) { auditVerdict("rejected", "insufficient_rubric_axes"); return `[workflow-guard] Review rejected: summary must reference the review axes (found ${referenced.length}/5). Call guard_review_rubric to get the rubric, evaluate each axis, and include findings per axis in the summary.`; }
 				if (args.passed && /(?:^|\s)(?:\[p[01]\]|p[01]\s*:\s*(?:blocker|defect|vulnerability|error|bug|issue)|p[01]\s+blocker)/i.test(args.summary)) { auditVerdict("rejected", "approval_contains_blocker"); return "[workflow-guard] Review rejected: cannot record approval when P0 or P1 blockers are flagged in findings. Resolve all P0/P1 issues before approving or record review with passed=false."; }
-				recordReviewResult(args.reviewer, args.summary, args.passed, parentSessionID, toolContext.worktree || toolContext.directory);
-				if (followupStore && !secretIn(args.summary)) for (const finding of extractReviewFollowups(args.summary)) recordReviewFollowup(followupStore, { severity: finding.severity, summary: finding.summary, reviewer: args.reviewer, sessionID: toolContext.sessionID, commit: getCurrentGitCommitHash(effectiveRoot) });
+				const reviewWorkspace = await resolveEffectiveWorkspace({ sessionID: toolContext.sessionID, directory: args.directory, fallback: toolContext.worktree || toolContext.directory || effectiveRoot });
+				recordReviewResult(args.reviewer, args.summary, args.passed, parentSessionID, reviewWorkspace);
+				if (followupStore && !secretIn(args.summary)) for (const finding of extractReviewFollowups(args.summary)) recordReviewFollowup(followupStore, { severity: finding.severity, summary: finding.summary, reviewer: args.reviewer, sessionID: toolContext.sessionID, commit: getCurrentGitCommitHash(reviewWorkspace) });
 				auditVerdict(args.passed ? "approved" : "changes_requested", args.passed ? "approved" : "changes_requested");
 				return args.passed ? `[workflow-guard] Review recorded as APPROVED by ${args.reviewer}.` : `[workflow-guard] Review recorded as CHANGES REQUESTED by ${args.reviewer}.`;
 			},
@@ -256,13 +275,18 @@ export function createCustomTools(options: {
 		guard_review_followups: tool({ description: "List durable local P2/P3 review follow-ups (technical debt) for this project. Proactively check during planning or before final verification to address open findings.", args: {}, execute: async () => JSON.stringify(followupStore ? listReviewFollowups(followupStore) : [], null, 2) }),
 		guard_review_followup_resolve: tool({ description: "Resolve a durable local review follow-up after the underlying issue has been fixed and verified.", args: { id: tool.schema.string() }, execute: async (args) => followupStore && resolveReviewFollowup(followupStore, args.id) ? `[workflow-guard] Review follow-up ${args.id} resolved.` : `[workflow-guard] Review follow-up ${args.id} was not open or was not found.` }),
 		guard_review_rubric: tool({
-			description: "Get the secondary-review rubric for the current branch diff across 5 core review axes (test integrity, task completeness, cleanliness, security, platform). The orchestrator should call this before finalizing work or creating a PR, then spawn a reviewer subagent with the rubric as the prompt, which records its verdict via record_review.", args: { base: tool.schema.string().optional().describe("Base ref to diff against (default: origin/main, origin/master, main)") },
-			execute: async (args) => {
+			description: "Get the secondary-review rubric for the current branch diff across 5 core review axes (test integrity, task completeness, cleanliness, security, platform). The orchestrator should call this before finalizing work or creating a PR, then spawn a reviewer subagent with the rubric as the prompt, which records its verdict via record_review.",
+			args: {
+				base: tool.schema.string().optional().describe("Base ref to diff against (default: origin/main, origin/master, main)"),
+				directory: tool.schema.string().optional().describe("Target repository directory (defaults to active session directory or workspace root)"),
+			},
+			execute: async (args, toolContext) => {
 				const sanitizedBase = typeof args.base === "string" && !args.base.startsWith("-") && !/[\s;'"\0]/.test(args.base) ? args.base : undefined;
 				const bases = sanitizedBase ? [sanitizedBase] : ["origin/main", "origin/master", "main", "master"];
+				const rubricWorkspace = await resolveEffectiveWorkspace({ sessionID: toolContext?.sessionID, directory: args?.directory, fallback: toolContext?.worktree || toolContext?.directory || effectiveRoot });
 				let diffText = "";
-				for (const base of bases) { const res = spawnSync("git", ["diff", "--", `${base}...HEAD`], { cwd: getWorkspaceRoot(), encoding: "utf8", timeout: 10_000 }); if (res.status === 0 && res.stdout.trim()) { diffText = res.stdout; break; } }
-				if (!diffText) { const last = spawnSync("git", ["diff", "--", "HEAD~1"], { cwd: getWorkspaceRoot(), encoding: "utf8", timeout: 10_000 }); diffText = last.status === 0 ? last.stdout : "(no diff available)"; }
+				for (const base of bases) { const res = spawnSync("git", ["diff", "--", `${base}...HEAD`], { cwd: rubricWorkspace, encoding: "utf8", timeout: 10_000 }); if (res.status === 0 && res.stdout.trim()) { diffText = res.stdout; break; } }
+				if (!diffText) { const last = spawnSync("git", ["diff", "--", "HEAD~1"], { cwd: rubricWorkspace, encoding: "utf8", timeout: 10_000 }); diffText = last.status === 0 ? last.stdout : "(no diff available)"; }
 				return buildReviewRubric(diffText);
 			},
 		}),

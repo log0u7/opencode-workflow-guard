@@ -36,6 +36,14 @@ import {
 	getRecentAuditEntries,
 	getRecentVerifyHistory,
 	getVerifyHistoryFilePath,
+	getReviewCacheFilePath,
+	loadReviewCache,
+	persistReviewCache,
+	setSessionWorkspace,
+	getSessionWorkspace,
+	resolveEffectiveWorkspace,
+	getLastReviewResultForWorkspace,
+	isSameGitRepo,
 	managedConfigDiagnostic,
 	summarizeInput,
 	extractReviewFollowups,
@@ -2100,6 +2108,96 @@ const mainReviewToolResult = await customPlugin.tool?.record_review?.execute(
 );
 check("record_review rejects self-approval from main session", typeof mainReviewToolResult === "string" && mainReviewToolResult.includes("rejected"));
 
+// Secondary Review Approval Handoff & Durable Cache Tests
+console.log("- Secondary Review Approval Handoff & Durability -");
+
+// 1. Negative review statements do not create bogus technical debt items
+const negativeFollowups = extractReviewFollowups(
+	"Test integrity: ok. Task completeness: ok. Cleanliness: ok. Security: ok. Platform: ok.\n" +
+	"P2: None\n" +
+	"P3: 0\n" +
+	"P2: N/A\n" +
+	"P3: No issues identified\n" +
+	"P2: 0 defects\n" +
+	"P3: ok\n" +
+	"P2: clean\n" +
+	"P2: memory leak in worker pool"
+);
+check("extractReviewFollowups filters out negative statements and retains real issues", negativeFollowups.length === 1 && negativeFollowups[0]?.summary.includes("memory leak in worker pool"));
+
+// 2. Secondary review approval handoff from subagent to parent session
+const handoffRepo = join(root, "wg-handoff-repo");
+mkdirSync(handoffRepo, { recursive: true });
+spawnSync("git", ["init", "-b", "feature/handoff"], { cwd: handoffRepo });
+spawnSync("git", ["config", "user.email", "test@test.local"], { cwd: handoffRepo });
+spawnSync("git", ["config", "user.name", "Test Runner"], { cwd: handoffRepo });
+writeFileSync(join(handoffRepo, "code.txt"), "initial\n");
+spawnSync("git", ["add", "code.txt"], { cwd: handoffRepo });
+spawnSync("git", ["commit", "-m", "initial"], { cwd: handoffRepo });
+mkdirSync(join(handoffRepo, ".opencode"), { recursive: true });
+writeFileSync(join(handoffRepo, ".opencode", "workflow-guard.json"), JSON.stringify({ requireReview: true }));
+
+// Simulate host root being the filesystem root ("/") while session operates in handoffRepo
+const handoffPlugin = await WorkflowGuard({
+	directory: root,
+	worktree: "/",
+	client: fakeClient as any,
+	project: {} as any,
+	experimental_workspace: {} as any,
+	serverUrl: new URL("http://localhost:4096"),
+	$: undefined as any,
+});
+
+// Parent session sets active workspace in handoffRepo
+setSessionWorkspace("s-handoff-parent", handoffRepo);
+fakeParents.set("s-handoff-reviewer", "s-handoff-parent");
+
+// Before review: guard_status on parent reports review is unsatisfied
+const statusBeforeReview = JSON.parse(String(await handoffPlugin.tool?.guard_status?.execute({}, { sessionID: "s-handoff-parent", worktree: "/", directory: root } as any)));
+check("before review: guard_status reports review in outstandingRequirements", statusBeforeReview.outstandingRequirements.includes("review") && (statusBeforeReview.lastReview === null || statusBeforeReview.lastReview.fresh === false));
+
+// Before review: PR creation is blocked by missing review
+const prBeforeReview = JSON.parse(String(await handoffPlugin.tool?.guard_why?.execute({ tool: "bash", input: { command: "gh pr create --title test --body 'Summary\n\nRelease notes'", workdir: handoffRepo } }, { sessionID: "s-handoff-parent", worktree: "/", directory: root } as any)));
+check("before review: PR creation blocked by review requirement", prBeforeReview.status === "blocked" && prBeforeReview.message.includes("Passing secondary review approval is required"));
+
+// Subagent calls record_review with passed: true (without explicit directory argument)
+const subagentReviewResult = await handoffPlugin.tool?.record_review?.execute(
+	{
+		reviewer: "secondary-reviewer",
+		summary: "Test integrity: all tests pass. Task completeness: complete. Cleanliness: clean diff. Security: zero secrets. Platform: standard.",
+		passed: true,
+	},
+	{ sessionID: "s-handoff-reviewer", agent: "reviewer", worktree: "/", directory: root } as any,
+);
+check("subagent records review approval successfully", typeof subagentReviewResult === "string" && subagentReviewResult.includes("APPROVED"));
+
+// Parent checks guard_status: handoff succeeds!
+const statusAfterReview = JSON.parse(String(await handoffPlugin.tool?.guard_status?.execute({}, { sessionID: "s-handoff-parent", worktree: "/", directory: root } as any)));
+check("secondary review handoff: lastReview.fresh is true in parent session", statusAfterReview.lastReview?.fresh === true && statusAfterReview.lastReview?.passed === true);
+check("secondary review handoff: review removed from outstandingRequirements", !statusAfterReview.outstandingRequirements.includes("review"));
+
+// Parent checks PR creation via guard_why: handoff allows PR creation!
+const prAfterReview = JSON.parse(String(await handoffPlugin.tool?.guard_why?.execute({ tool: "bash", input: { command: "gh pr create --title test --body 'Summary\n\nRelease notes'", workdir: handoffRepo } }, { sessionID: "s-handoff-parent", worktree: "/", directory: root } as any)));
+check("secondary review handoff: PR creation allowed after review approval", prAfterReview.status !== "blocked" && (prAfterReview.status === "allowed" || prAfterReview.code === "remote_state_unchecked"));
+
+// 3. Durable disk cache persistence & recovery
+check("durable review cache file created on disk", existsSync(getReviewCacheFilePath()));
+const loadedDiskReview = loadReviewCache();
+check("loadReviewCache returns valid passing review", loadedDiskReview?.passed === true && loadedDiskReview?.reviewer === "secondary-reviewer");
+
+// Simulate new session / restart: clear in-memory sessionReviews and lastReview
+const memoryClearedStatus = JSON.parse(String(await handoffPlugin.tool?.guard_status?.execute({ directory: handoffRepo }, { sessionID: "s-fresh-session", worktree: "/", directory: root } as any)));
+check("fresh session recovers durable review cache from disk", memoryClearedStatus.lastReview?.fresh === true && !memoryClearedStatus.outstandingRequirements.includes("review"));
+
+// 4. Worktree compatibility: review recorded in linked worktree is recognized by main repo
+todo("s-handoff-parent", item("worktree test", "in_progress"));
+const handoffWorktreeRes = (await handoffPlugin.tool?.guard_worktree_create?.execute({ branch: "feat/handoff-worktree" }, { sessionID: "s-handoff-parent", worktree: handoffRepo, directory: handoffRepo } as any)) as string;
+check("worktree created for handoff test", typeof handoffWorktreeRes === "string" && handoffWorktreeRes.includes("Worktree created"));
+check("worktree and main repo recognized as same git repository", isSameGitRepo(join(getWorktreeStorageDir(handoffRepo), "feat-handoff-worktree"), handoffRepo));
+
+rmSync(handoffRepo, { recursive: true, force: true });
+resetReviewState();
+
 // Event hook handles permission events
 if (typeof customPlugin.event === "function") {
 	await customPlugin.event({
@@ -2783,6 +2881,7 @@ writeFileSync(join(checkpointHookDir, "tracked.txt"), "agent result\n");
 await checkpointHooks.event?.({ event: { type: "session.idle", properties: { sessionID: "checkpoint-root" } } } as any);
 const generatedCheckpointMessage = checkpointHookPrompts.find((entry) => entry.sessionID === "checkpoint-root")?.messageID;
 check("idle finalizes recovery checkpoint before continuation", Boolean(listRecoveryCheckpoints(checkpointHookDir, "checkpoint-root")[0]?.endFingerprint && generatedCheckpointMessage));
+check("synthetic continuation messageID conforms to OpenCode msg_ prefix schema", typeof generatedCheckpointMessage === "string" && generatedCheckpointMessage.startsWith("msg_"));
 await checkpointHooks["chat.message"]?.({ sessionID: "checkpoint-root", messageID: generatedCheckpointMessage } as any, {} as any);
 check("synthetic continuation does not replace recovery checkpoint", listRecoveryCheckpoints(checkpointHookDir, "checkpoint-root").length === 1);
 checkpointHookParents.set("checkpoint-child", "checkpoint-root");

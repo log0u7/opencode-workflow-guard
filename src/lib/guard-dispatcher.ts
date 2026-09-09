@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { loadVerifyCache } from "./audit.ts";
+import { loadReviewCache, loadVerifyCache } from "./audit.ts";
 import { isEvidenceFresh, reviewEvidence, verificationEvidence } from "./evidence.ts";
-import { projectRootKey } from "./project-config.ts";
+import { findGitRoot, isSameGitRepo, projectRootKey } from "./project-config.ts";
 import {
 	getLastReviewResult,
 	getSdkClient,
@@ -435,7 +435,13 @@ export async function guardToolCallImpl(
 				if (mergedStatus.merged) preflightFailures.push(mergedStatus.reason ?? "Branch is already merged or closed.");
 			}
 			if (isReviewRequired(prRoot)) {
-				const review = context?.sessionID ? (sessionReviews.get(context.sessionID) ?? getLastReviewResult()) : getLastReviewResult();
+				let review = context?.sessionID ? (sessionReviews.get(context.sessionID) ?? getLastReviewResult()) : getLastReviewResult();
+				if (!review) {
+					const diskCached = loadReviewCache();
+					if (diskCached && diskCached.passed && diskCached.workspace && (projectRootKey(diskCached.workspace) === projectRootKey(prRoot) || isSameGitRepo(diskCached.workspace, prRoot))) {
+						review = diskCached;
+					}
+				}
 				const reviewMatchesContext = review?.passed === true && isEvidenceFresh(reviewEvidence(review), { workspace: projectRootKey(prRoot), commitHash: getCurrentGitCommitHash(prRoot), worktreeFingerprint: getGitWorktreeFingerprint(prRoot), sessionID: review.targetSessionID }, 0) && (!review.targetSessionID || review.targetSessionID === context?.sessionID);
 				if (!reviewMatchesContext) preflightFailures.push("Passing secondary review approval is required; invoke a secondary review subagent and record approval with record_review.");
 			}
