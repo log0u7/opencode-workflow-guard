@@ -451,6 +451,19 @@ check("block apply_patch to opencode.json", blocked(await call("apply_patch", { 
 check("allow edit of normal source file", !(await call("edit", { filePath: join(root, "src", "index.ts"), oldString: "a", newString: "b" }, { sessionID: "s-active" })));
 check("allow write of project plan file under .opencode/plans", !(await call("write", { filePath: join(root, ".opencode", "plans", "1789589538371-plan.md"), content: "# plan" }, { sessionID: "s-active" })));
 check("block write escaping plans dir via .. (still tamper)", blocked(await call("write", { filePath: join(root, ".opencode", "plans", "..", "opencode.json"), content: "{}" }, { sessionID: "s-active" })));
+check("block write of the plans directory itself (no trailing-slash exemption)", blocked(await call("write", { filePath: join(root, ".opencode", "plans"), content: "{}" }, { sessionID: "s-active" })));
+check("block write under .opencode/plansx prefix (still tamper)", blocked(await call("write", { filePath: join(root, ".opencode", "plansx", "x.md"), content: "{}" }, { sessionID: "s-active" })));
+check("block write to user-level config plans path (exemption is project-only)", blocked(await call("write", { filePath: "/var/home/x/.config/opencode/plans/x.md", content: "{}" }, { sessionID: "s-active" })));
+// Plans dir symlinked at a config-shaped real location: lexical target is
+// exempt but the realpath fallback must still block via the user-config check.
+const plansAliasDir = mkdtempSync(join(tmpdir(), "wg-plans-alias-"));
+mkdirSync(join(plansAliasDir, ".config", "opencode"), { recursive: true });
+mkdirSync(join(plansAliasDir, ".opencode"), { recursive: true });
+symlinkSync(join(plansAliasDir, ".config", "opencode"), join(plansAliasDir, ".opencode", "plans"), "dir");
+setWorkspaceRoot(plansAliasDir);
+check("write through plans symlink into config real path blocked (realpath fallback)", blocked(await call("write", { filePath: join(plansAliasDir, ".opencode", "plans", "x.md"), content: "{}" }, { sessionID: "s-active" })));
+setWorkspaceRoot(root);
+rmSync(plansAliasDir, { recursive: true, force: true });
 console.log("- Policy 7: branch guard -");
 // Non-git workspace (current `root` is a plain temp dir): git writes allowed.
 check("non-git workspace: git commit allowed", !(await shell("git commit -m test")));
