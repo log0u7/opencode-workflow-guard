@@ -53,6 +53,11 @@ export function isProtectedPath(targetPath: string): boolean {
 		const base = basename(path);
 		const lower = path.toLowerCase();
 		const dotOc = "." + "opencode/";
+		// opencode plan mode writes agent plan markdown under the project's
+		// .opencode/plans/ directory - plan files are documents, not
+		// configuration. The trailing slash keeps the plans directory
+		// itself protected.
+		if (lower.includes("/" + dotOc + "plans/")) return false;
 		const cfgOc = "/.config/" + "opencode/";
 		const cfgOcJson = "/.config/" + "opencode.json";
 		return (

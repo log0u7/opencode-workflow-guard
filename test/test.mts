@@ -449,6 +449,8 @@ check("block write of .opencode/project config", blocked(await call("write", { f
 check("block write of global opencode config path", blocked(await call("write", { filePath: "/var/home/x/.config/opencode/opencode.json", content: "{}" }, { sessionID: "s-active" })));
 check("block apply_patch to opencode.json", blocked(await call("apply_patch", { patchText: "*** Update File: opencode.json\n" }, { sessionID: "s-active" })));
 check("allow edit of normal source file", !(await call("edit", { filePath: join(root, "src", "index.ts"), oldString: "a", newString: "b" }, { sessionID: "s-active" })));
+check("allow write of project plan file under .opencode/plans", !(await call("write", { filePath: join(root, ".opencode", "plans", "1789589538371-plan.md"), content: "# plan" }, { sessionID: "s-active" })));
+check("block write escaping plans dir via .. (still tamper)", blocked(await call("write", { filePath: join(root, ".opencode", "plans", "..", "opencode.json"), content: "{}" }, { sessionID: "s-active" })));
 console.log("- Policy 7: branch guard -");
 // Non-git workspace (current `root` is a plain temp dir): git writes allowed.
 check("non-git workspace: git commit allowed", !(await shell("git commit -m test")));

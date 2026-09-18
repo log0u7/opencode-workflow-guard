@@ -60,6 +60,7 @@ It is a policy and enforcement layer, not an agent harness. Policies may constra
   - Direct edits of the same paths through the `edit`/`write`/`apply_patch` tools
   - Shell commands invoking `opencode auth`, `opencode config`, `opencode permission`, or `opencode run --auto`
   - Evasion-normalized: quote-concatenation (`open''code.json`), escapes (`open\c\ode`), and glob wildcards (`opencode.jso?`) are stripped before matching.
+- Plan files under `.opencode/plans/` are exempt: opencode's plan mode writes agent-authored plan markdown there, and plans are content, not configuration. Everything else under `.opencode/` (including the directory itself) stays protected.
 - **Read-only access is allowed** (`cat`, `less`, `grep`, `head`, `tail` on config files) - only modification attempts trigger the guard.
 
 ### 7. Feature-Branch Workflow
