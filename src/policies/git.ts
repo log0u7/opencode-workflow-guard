@@ -123,7 +123,7 @@ export function normalizeGitCommands(command: string): string {
 }
 
 export const GIT_WRITE_RE =
-	/\bgit\s+(add|rm|mv|commit|merge|rebase|cherry-pick|revert|stash\s+pop|apply|am|restore|reset|update-ref|filter-branch)\b|\bgit\s+tag\s+(?!--?list\b|-l\b)|\bgit\s+checkout\s+(?!-b\b)|\bgit\s+branch\s+(?:[^|;&]*\s)?-[dDM]\b/;
+	/\bgit\s+(add|rm|mv|commit|merge|rebase|cherry-pick|revert|stash\s+pop|apply|am|restore|reset|update-ref|filter-branch)\b|\bgit\s+tag\s+(?!--?list\b|-l\b)(?:[^|;&]*\s)?(?:-d\b|--delete\b)|\bgit\s+checkout\s+(?!-b\b)|\bgit\s+branch\s+(?:[^|;&]*\s)?-[dDM]\b/;
 
 export function currentGitBranch(root: string): string | undefined {
 	const result = spawnSync("git", ["branch", "--show-current"], {
@@ -177,6 +177,47 @@ export function pushedProtectedBranchIn(pushCommand: string, root: string): stri
 		if (re.test(pushCommand)) return branch;
 	}
 	return undefined;
+}
+
+/**
+ * True when a `git push` command pushes a tag refspec: an explicit
+ * `refs/tags/<name>` destination, or a short name that resolves to an
+ * existing tag in the repository at `root`. Publishing a tag is a release
+ * operation, not a branch mutation, so callers exempt it from the
+ * protected-branch and merged-branch push rules (#134). Deletion refspecs
+ * (`:refs/tags/<name>`, `git push --delete`, `-d`) return false so tag
+ * deletions stay blocked.
+ */
+export function tagRefspecIn(pushCommand: string, root: string): boolean {
+	if (/\s--delete\b|\s-d(?:\b|$)/.test(pushCommand)) return false;
+	for (const segment of splitShellSegments(pushCommand)) {
+		const parsed = parseGitInvocation(segment);
+		if (!parsed || !/\bpush\b/.test(parsed.rest)) continue;
+		const tokens = parsed.rest.split(/\s+/).slice(1);
+		let remoteSeen = false;
+		for (const rawToken of tokens) {
+			if (rawToken.startsWith("-")) continue;
+			if (!remoteSeen) {
+				remoteSeen = true;
+				continue;
+			}
+			const token = rawToken.replace(/^\+/, "");
+			if (!token) continue;
+			if (token.startsWith(":")) continue; // deletion refspec: empty source
+			if (token.includes(":")) {
+				if (token.includes(":refs/tags/")) return true; // <src>:refs/tags/<name>
+				continue;
+			}
+			if (token.startsWith("refs/tags/")) return true; // explicit tag refspec
+			const probe = spawnSync("git", ["show-ref", "--verify", "--quiet", `refs/tags/${token}`], {
+				cwd: root,
+				encoding: "utf8",
+				timeout: 10_000,
+			});
+			if (probe.status === 0) return true;
+		}
+	}
+	return false;
 }
 
 export function onProtectedBranch(root: string): boolean {

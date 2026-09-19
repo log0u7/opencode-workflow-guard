@@ -464,7 +464,8 @@ check("on main: git merge blocked", blocked(await shell("git merge feature/x")))
 	check("on main: git checkout path mutation without separator blocked", blocked(await shell("git checkout tracked.txt")));
 	check("on main: git checkout -B reset blocked", blocked(await shell("git checkout -B main HEAD~1")));
 	check("on main: git add blocked", blocked(await shell("git add tracked.txt")));
-	check("on main: git tag blocked", blocked(await shell("git tag release-test")));
+	check("on main: git tag creation allowed", !blocked(await shell("git tag release-test")));
+	check("on main: git tag -d blocked", blocked(await shell("git tag -d release-test")));
 	check("on main: git tag --list allowed", !blocked(await shell("git tag --list")));
 check("on main: git switch -c allowed (branch creation)", !(await shell("git switch -c feat/x")));
 check("on main: git status allowed", !(await shell("git status")));
@@ -2270,6 +2271,12 @@ setWorkspaceRoot(conflictRepo);
 const mergedCheck = isBranchAlreadyMergedOrClosed(conflictRepo, "feat/already-merged");
 check("isBranchAlreadyMergedOrClosed identifies branch with 0 diff from main", mergedCheck.merged);
 check("git push on already merged branch is blocked", blocked(await shell("git push origin feat/already-merged")));
+
+// Tag pushes are release operations, not branch mutations (#134).
+spawnSync("git", ["tag", "v0.3.0"], { cwd: conflictRepo });
+check("git push origin v0.3.0 allowed from merged branch", !blocked(await shell("git push origin v0.3.0")));
+check("git push origin refs/tags/v0.3.0 allowed", !blocked(await shell("git push origin refs/tags/v0.3.0")));
+check("git push origin :refs/tags/v0.3.0 still blocked", blocked(await shell("git push origin :refs/tags/v0.3.0")));
 
 // Create a branch with a genuine merge conflict against main
 spawnSync("git", ["switch", "main"], { cwd: conflictRepo });
