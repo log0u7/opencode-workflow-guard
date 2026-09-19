@@ -8,7 +8,7 @@ import {
 	recordMutation,
 } from "../lib/state.ts";
 import { shellWords, unwrapShellCommand } from "../lib/shell.ts";
-import { isProtectedPath, PROTECTED_PATH_REASON } from "./tamper.ts";
+import { isCollaborationInvocation, isProtectedPath, PROTECTED_PATH_REASON } from "./tamper.ts";
 import { isSecretPath, secretIn } from "./secrets.ts";
 import { onProtectedBranch, branchGuardReason } from "./git.ts";
 import {
@@ -305,6 +305,10 @@ export function secretSourceInFilesystemCommand(segment: string): string | undef
 
 export function detectShellMutation(command: string): ShellMutation | undefined {
 	for (const segment of command.split(/[\n|;&]+/)) {
+		// Collaboration invocations never write local files; their quoted
+		// arguments can contain redirect-looking text that is not a shell
+		// redirect.
+		if (isCollaborationInvocation(segment)) continue;
 		const simpleMutations = simpleFilesystemMutations(segment);
 		if (simpleMutations.length > 0) return simpleMutations[0];
 		const teeTargets = teeTargetsIn(segment);
@@ -329,6 +333,9 @@ export async function guardShellMutation(
 	const root = getWorkspaceRoot();
 	let hasMutation = false;
 	for (const segment of command.split(/[\n|;&]+/)) {
+		// Same collaboration exemption as detectShellMutation: quoted
+		// arguments of gh/glab/az PR/issue commands are not shell redirects.
+		if (isCollaborationInvocation(segment)) continue;
 		const secretSource = secretSourceInFilesystemCommand(segment);
 		if (secretSource) {
 			return `Blocked: shell command would copy, move, or link sensitive file '${secretSource}' under a non-secret name.`;
