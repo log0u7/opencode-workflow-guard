@@ -3090,7 +3090,7 @@ await continuationPlugin.event?.({ event: { type: "message.updated", properties:
 await continuationPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-resume-abort" } } } as any);
 check("genuine user input after an interrupt re-enables automatic continuation", continuationPrompts.filter((id) => id === "s-resume-abort").length === 2);
 todo("s-resume-api-error", item("work behind a flaky provider", "pending"));
-await continuationPlugin.event?.({ event: { type: "session.error", properties: { sessionID: "s-resume-api-error", error: { name: "ApiError", data: { message: "provider overloaded" } } } } } as any);
+await continuationPlugin.event?.({ event: { type: "session.error", properties: { sessionID: "s-resume-api-error", error: { name: "APIError", data: { message: "provider overloaded" } } } } } as any);
 await continuationPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-resume-api-error" } } } as any);
 check("non-abort session errors do not disable automatic continuation", continuationPrompts.filter((id) => id === "s-resume-api-error").length === 1);
 
