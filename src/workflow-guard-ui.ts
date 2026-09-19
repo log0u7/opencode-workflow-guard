@@ -1,4 +1,14 @@
+/**
+ * Workflow Guard TUI companion plugin for OpenCode V2 (CLI plugin API).
+ *
+ * - Registers the `/guard-options` palette + slash command to toggle project options.
+ * - Renders the Workflow Guard badge in the home and prompt footer status slots.
+ *
+ * The V1 entrypoint (`WorkflowGuardTui`) remains for OpenCode 1.x TUI clients.
+ */
+
 import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
+import { Plugin } from "@opencode/plugin/tui";
 import type { JSX } from "@opentui/solid";
 import { createElement, insert, setProp } from "@opentui/solid";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -75,6 +85,79 @@ export function formatBadge(): { text: string; isBlocked: boolean } {
 	return { text: BADGE_ACTIVE, isBlocked: false };
 }
 
+// ── V2 CLI plugin ─────────────────────────────────────────────────────────────
+
+type TuiContext = Plugin.Context;
+
+const TOGGLE_OPTIONS: Array<{ key: ProjectToggle; description: string }> = [
+	{ key: "recoveryCheckpoints", description: "Toggle durable pre-run Git checkpoints" },
+	{ key: "projectMemory", description: "Toggle durable local project memory" },
+	{ key: "learning", description: "Toggle evidence-based learning tools" },
+	{ key: "titleSettleWorkaround", description: "Delay automatic continuation while OpenCode generates a session title" },
+	{ key: "ralphMode", description: "Opt into bounded autonomous continuation of already-owned todos" },
+];
+
+export const WorkflowGuardTuiV2 = (ctx: TuiContext) => {
+	const badge = () => {
+		const formatted = formatBadge();
+		return text({ fg: ctx.theme.text.feedback.success.base }, [formatted.text]);
+	};
+
+	const optionsRoot = () => ctx.location?.directory || process.cwd();
+
+	ctx.keymap.layer(() => ({
+		commands: [{
+			id: "workflow-guard.project-options",
+			title: "Workflow Guard: Project Options",
+			description: "Toggle Workflow Guard project options (recovery checkpoints, project memory, learning, title settle, ralph mode)",
+			group: "Workflow Guard",
+			palette: true,
+			slash: { name: "guard-options" },
+			async run() {
+				const root = optionsRoot();
+				for (;;) {
+					const current = new Map(TOGGLE_OPTIONS.map((option) => [option.key, readProjectOption(root, option.key)]));
+					const choice = await ctx.ui.dialog.select<ProjectToggle>({
+						title: "Workflow Guard Project Options",
+						options: TOGGLE_OPTIONS.map((option) => ({
+							title: `${option.key}: ${current.get(option.key) ? "On" : "Off"}`,
+							value: option.key,
+							description: option.description,
+						})),
+					});
+					if (!choice) break;
+					try {
+						const enabled = !readProjectOption(root, choice);
+						const path = writeProjectOption(root, choice, enabled);
+						ctx.ui.toast.show({
+							variant: "success",
+							title: "Workflow Guard",
+							message: `Saved ${choice} ${enabled ? "on" : "off"} in ${path}. Restart OpenCode to apply.`,
+						});
+					} catch (error) {
+						ctx.ui.toast.show({
+							variant: "error",
+							title: "Workflow Guard",
+							message: error instanceof Error ? error.message : String(error),
+						});
+						break;
+					}
+				}
+			},
+		}],
+		bindings: [],
+	}));
+
+	ctx.ui.slot({ append: "home.footer.status", render: () => badge() });
+	ctx.ui.slot({ append: "prompt.footer.status", render: () => badge() });
+
+	return () => {
+		// Slot claims and keymap layers are disposed automatically on unload.
+	};
+};
+
+// ── V1 TUI plugin ─────────────────────────────────────────────────────────────
+
 export const WorkflowGuardTui: TuiPlugin = async (api) => {
 	api.keymap.registerLayer({
 		commands: [{
@@ -85,11 +168,6 @@ export const WorkflowGuardTui: TuiPlugin = async (api) => {
 			slashName: "guard-options",
 			run() {
 				const root = api.state.path.worktree || api.state.path.directory;
-				const recovery = readProjectOption(root, "recoveryCheckpoints");
-				const memory = readProjectOption(root, "projectMemory");
-				const learning = readProjectOption(root, "learning");
-				const titleSettle = readProjectOption(root, "titleSettleWorkaround");
-				const ralphMode = readProjectOption(root, "ralphMode");
 				const toggle = (key: ProjectToggle) => {
 					const enabled = !readProjectOption(root, key);
 					const path = writeProjectOption(root, key, enabled);
@@ -99,13 +177,12 @@ export const WorkflowGuardTui: TuiPlugin = async (api) => {
 				api.ui.dialog.replace(() => api.ui.DialogSelect({
 					title: "Workflow Guard Project Options",
 					current: undefined,
-					options: [
-						{ title: `Recovery checkpoints: ${recovery ? "On" : "Off"}`, value: "recoveryCheckpoints", description: "Toggle durable pre-run Git checkpoints", onSelect: () => toggle("recoveryCheckpoints") },
-						{ title: `Project memory: ${memory ? "On" : "Off"}`, value: "projectMemory", description: "Toggle durable local project memory", onSelect: () => toggle("projectMemory") },
-						{ title: `Learner mode: ${learning ? "On" : "Off"}`, value: "learning", description: "Toggle evidence-based learning tools", onSelect: () => toggle("learning") },
-						{ title: `Title settle workaround: ${titleSettle ? "On" : "Off"}`, value: "titleSettleWorkaround", description: "Delay automatic continuation while OpenCode generates a session title", onSelect: () => toggle("titleSettleWorkaround") },
-						{ title: `Ralph mode: ${ralphMode ? "On" : "Off"}`, value: "ralphMode", description: "Opt into bounded autonomous continuation of already-owned todos", onSelect: () => toggle("ralphMode") },
-					],
+					options: TOGGLE_OPTIONS.map((option) => ({
+						title: `${option.key}: ${readProjectOption(root, option.key) ? "On" : "Off"}`,
+						value: option.key,
+						description: option.description,
+						onSelect: () => toggle(option.key),
+					})),
 				}));
 			},
 		}],
@@ -129,7 +206,11 @@ export const WorkflowGuardTui: TuiPlugin = async (api) => {
 	});
 };
 
+// Default export supports BOTH generations: V1 TUI clients call tui(), V2 reads setup().
 export default {
-	id: "workflow-guard-ui",
+	...Plugin.define({
+		id: "workflow-guard-ui",
+		setup: WorkflowGuardTuiV2,
+	}),
 	tui: WorkflowGuardTui,
-} satisfies TuiPluginModule;
+} as const satisfies TuiPluginModule;

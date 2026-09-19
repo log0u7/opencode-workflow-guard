@@ -137,7 +137,7 @@ check("server and TUI package specs resolve to different modules", installedPack
 const opencodeCheck = spawnSync("opencode", ["--version"], { encoding: "utf8" });
 if (opencodeCheck.status !== 0) {
 	console.log("SKIP: opencode CLI is not available in PATH. Package checks passed; skipping live runtime load tests.");
-	rmSync(testDir, { recursive: true, force: true });
+	if (!process.env.WG_E2E_KEEP) rmSync(testDir, { recursive: true, force: true });
 	console.log(`\n${pass} passed, ${fail} failed`);
 	process.exit(fail > 0 ? 1 : 0);
 }
@@ -149,20 +149,41 @@ mkdirSync(pluginsDir, { recursive: true });
 
 // Pre-seed .opencode with dependencies already installed into testDir
 // so opencode does not execute a cold network install at runtime startup.
-const opencodeVersion = opencodeCheck.stdout.trim();
+const opencodeVersionRaw = opencodeCheck.stdout.trim();
+const opencodeSemver = opencodeVersionRaw.match(/(\d+\.\d+\.\d+)/)?.[1] ?? opencodeVersionRaw;
+const opencodeMajor = Number(opencodeSemver.split(".")[0] ?? 1);
+const isOpenCodeV2 = opencodeMajor >= 2;
 const lockPath = join(testDir, "package-lock.json");
 if (existsSync(lockPath) && existsSync(join(testDir, "node_modules"))) {
 	try {
 		const lock = JSON.parse(readFileSync(lockPath, "utf8"));
 		lock.name = ".opencode";
-		if (lock.packages?.["node_modules/@opencode-ai/plugin"]) {
-			lock.packages["node_modules/@opencode-ai/plugin"].version = opencodeVersion;
+		const installedVersions: Record<string, string> = {};
+		for (const key of ["node_modules/@opencode-ai/plugin", "node_modules/@opencode/plugin"]) {
+			const version = lock.packages?.[key]?.version;
+			if (typeof version === "string" && version) installedVersions[key.replace("node_modules/", "")] = version;
 		}
-		if (lock.packages?.[""]) {
-			lock.packages[""].dependencies = { "@opencode-ai/plugin": opencodeVersion };
+		if (isOpenCodeV2) {
+			// V2 loads .opencode deps with the real installed versions; rewriting
+			// them to the CLI version string would produce invalid semver.
+			const dependencies: Record<string, string> = {};
+			for (const [name, version] of Object.entries(installedVersions)) dependencies[name] = version;
+			if (!Object.keys(dependencies).length) dependencies["@opencode/plugin"] = "latest";
+			if (lock.packages?.[""]) {
+				lock.packages[""].dependencies = dependencies;
+			}
+			writeFileSync(join(opencodeDir, "package-lock.json"), JSON.stringify(lock, null, 2) + "\n");
+			writeFileSync(join(opencodeDir, "package.json"), JSON.stringify({ name: ".opencode", dependencies }, null, 2) + "\n");
+		} else {
+			if (lock.packages?.["node_modules/@opencode-ai/plugin"]) {
+				lock.packages["node_modules/@opencode-ai/plugin"].version = opencodeSemver;
+			}
+			if (lock.packages?.[""]) {
+				lock.packages[""].dependencies = { "@opencode-ai/plugin": opencodeSemver };
+			}
+			writeFileSync(join(opencodeDir, "package-lock.json"), JSON.stringify(lock, null, 2) + "\n");
+			writeFileSync(join(opencodeDir, "package.json"), JSON.stringify({ name: ".opencode", dependencies: { "@opencode-ai/plugin": opencodeSemver } }, null, 2) + "\n");
 		}
-		writeFileSync(join(opencodeDir, "package-lock.json"), JSON.stringify(lock, null, 2) + "\n");
-		writeFileSync(join(opencodeDir, "package.json"), JSON.stringify({ name: ".opencode", dependencies: { "@opencode-ai/plugin": opencodeVersion } }, null, 2) + "\n");
 		cpSync(join(testDir, "node_modules"), join(opencodeDir, "node_modules"), { recursive: true });
 	} catch {}
 }
@@ -179,20 +200,45 @@ const importedMarker = join(testDir, ".workflow-guard-imported");
 const initializedMarker = join(testDir, ".workflow-guard-initialized");
 const accountabilityMarker = join(testDir, ".workflow-guard-accountability");
 writeFileSync(localAdapter, `import { writeFileSync } from "node:fs";
+import { Plugin } from "@opencode/plugin";
 
 writeFileSync(${JSON.stringify(importedMarker)}, "imported\\n");
 
 export const WorkflowGuardE2E = async (ctx: any) => {
-\tconst { WorkflowGuard } = await import("../workflow-guard-source/workflow-guard.ts");
-\tconst hooks = await WorkflowGuard(ctx);
-\tconst status = await hooks.tool?.guard_status?.execute({}, { sessionID: "headless-e2e", directory: ctx.directory, worktree: ctx.worktree });
-\tconst why = await hooks.tool?.guard_why?.execute({ tool: "bash", input: { command: "git push origin main" } }, { sessionID: "headless-e2e", directory: ctx.directory, worktree: ctx.worktree });
-\twriteFileSync(${JSON.stringify(accountabilityMarker)}, JSON.stringify({ status: JSON.parse(String(status)), why: JSON.parse(String(why)) }) + "\\n");
-\twriteFileSync(${JSON.stringify(initializedMarker)}, "initialized\\n");
-\treturn hooks;
+	const { WorkflowGuard } = await import("../workflow-guard-source/workflow-guard.ts");
+	// Shape a V1-style context from whatever generation's context we received:
+	// V2 ctx.location = { directory, project } while V1 passed directory/worktree directly.
+	const directory = ctx?.location?.directory ?? ctx?.directory ?? process.cwd();
+	const v1ctx = { directory, worktree: directory, project: ctx?.location?.project ?? ctx?.project, client: undefined };
+	const hooks = await WorkflowGuard(v1ctx);
+	const status = await hooks.tool?.guard_status?.execute({}, { sessionID: "headless-e2e", directory, worktree: directory });
+	const why = await hooks.tool?.guard_why?.execute({ tool: "bash", input: { command: "git push origin main" } }, { sessionID: "headless-e2e", directory, worktree: directory });
+	writeFileSync(${JSON.stringify(accountabilityMarker)}, JSON.stringify({ status: JSON.parse(String(status)), why: JSON.parse(String(why)) }) + "\\n");
+	writeFileSync(${JSON.stringify(initializedMarker)}, "initialized\\n");
+	return hooks;
 };
 
-export default { id: "workflow-guard-e2e", server: WorkflowGuardE2E };
+const probe = async (ctx: any) => {
+	try {
+		return await WorkflowGuardE2E(ctx);
+	} catch (error) {
+		writeFileSync(${JSON.stringify(accountabilityMarker)}, JSON.stringify({ error: String((error as Error)?.message ?? error), stack: String((error as Error)?.stack ?? "") }) + "\\n");
+		throw error;
+\t}
+};
+
+export default {
+\t...Plugin.define({
+\t\tid: "workflow-guard-e2e",
+\t\tasync setup(ctx: any) {
+\t\t\twriteFileSync(${JSON.stringify(importedMarker)}, "imported\\n");
+\t\t\tawait probe(ctx);
+\t\t},
+\t}),
+\tserver: async (ctx: any) => {
+\t\treturn await probe(ctx);
+\t},
+};
 `);
 writeFileSync(join(testDir, ".opencode", "opencode.json"), `${JSON.stringify({ plugin: ["./plugins/workflow-guard.ts"] }, null, 2)}\n`);
 check("local plugin adapter and source copied successfully", existsSync(localAdapter) && existsSync(targetPlugin));
@@ -211,6 +257,13 @@ const runtimeEnv: NodeJS.ProcessEnv = {
 delete runtimeEnv.OPENCODE_PID;
 delete runtimeEnv.OPENCODE_PURE;
 delete runtimeEnv.OPENCODE;
+if (isOpenCodeV2) {
+	// V2 runs a shared managed service on a fixed default port. Each run uses
+	// its own isolated XDG dirs, so pick a run-unique port to keep concurrent
+	// and sequential runs from colliding on service startup.
+	const servicePort = 49400 + (process.pid % 1000);
+	spawnSync("opencode", ["service", "set", "port", String(servicePort)], { cwd: testDir, encoding: "utf8", env: runtimeEnv, timeout: 30_000 });
+}
 const runOpenCode = (args: string[], timeout: number) =>
 	spawnSync("opencode", ["run", "--dir", testDir, ...args], { cwd: testDir, encoding: "utf8", timeout, env: runtimeEnv });
 const configProbe = await new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
@@ -229,7 +282,11 @@ const configProbe = await new Promise<{ status: number | null; stdout: string; s
 
 	const checkReady = () => {
 		try {
-			if (JSON.parse(stdout)?.plugin_origins && existsSync(initializedMarker)) {
+			const parsed = JSON.parse(stdout);
+			// V1 prints an object with plugin_origins; V2 prints a config document
+			// array. Either way, the adapter's setup/server must have run.
+			const hasConfig = Boolean(parsed?.plugin_origins) || Array.isArray(parsed);
+			if (hasConfig && existsSync(initializedMarker)) {
 				done(0);
 			}
 		} catch {}
@@ -247,17 +304,35 @@ const configProbe = await new Promise<{ status: number | null; stdout: string; s
 
 	timer = setTimeout(() => done(null), 30_000);
 });
+if (isOpenCodeV2) {
+	// V2's debug config can exit before plugin setup completes; wait briefly
+	// for the adapter's initialized marker before evaluating plugin checks.
+	for (let i = 0; i < 200 && !existsSync(initializedMarker); i++) {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+	}
+}
 let configLoadsLocalPlugin = false;
 try {
-	const config = JSON.parse(configProbe.stdout);
-	configLoadsLocalPlugin = config.plugin_origins?.some(
-		(origin: { spec?: unknown; source?: unknown; scope?: unknown }) =>
-			typeof origin.spec === "string" &&
-			origin.spec.endsWith("/.opencode/plugins/workflow-guard.ts") &&
-			origin.scope === "local",
-	);
+	if (isOpenCodeV2) {
+		// V2 has no plugin_origins in debug config output; the adapter's setup
+		// writing the imported marker is the plugin-load proof.
+		configLoadsLocalPlugin = existsSync(importedMarker) && existsSync(initializedMarker);
+	} else {
+		const config = JSON.parse(configProbe.stdout);
+		configLoadsLocalPlugin = config.plugin_origins?.some(
+			(origin: { spec?: unknown; source?: unknown; scope?: unknown }) =>
+				typeof origin.spec === "string" &&
+				origin.spec.endsWith("/.opencode/plugins/workflow-guard.ts") &&
+				origin.scope === "local",
+		);
+	}
 } catch {}
-check("OpenCode resolves isolated local plugin config without a model provider", configProbe.status === 0 && configLoadsLocalPlugin);
+const configCheckPassed = Boolean(check("OpenCode resolves isolated local plugin config without a model provider", configProbe.status === 0 && configLoadsLocalPlugin));
+if (!configCheckPassed) {
+	console.log(`  configProbe stderr: ${configProbe.stderr.slice(0, 2000)}`);
+	console.log(`  configProbe stdout: ${configProbe.stdout.slice(0, 2000)}`);
+	console.log(`  importedMarker: ${existsSync(importedMarker)} initializedMarker: ${existsSync(initializedMarker)}`);
+}
 let headlessAccountability: any;
 try {
 	headlessAccountability = JSON.parse(readFileSync(accountabilityMarker, "utf8"));
@@ -266,7 +341,7 @@ check("headless OpenCode runtime exposes structured guard status and why without
 
 if (process.env.WORKFLOW_GUARD_LIVE_E2E !== "1") {
 	console.log("SKIP: model-driven policy probes require WORKFLOW_GUARD_LIVE_E2E=1.");
-	rmSync(testDir, { recursive: true, force: true });
+	if (!process.env.WG_E2E_KEEP) rmSync(testDir, { recursive: true, force: true });
 	console.log(`\n${pass} passed, ${fail} failed`);
 	process.exit(fail > 0 ? 1 : 0);
 }
@@ -286,7 +361,7 @@ try {
 const liveModel = process.env.WORKFLOW_GUARD_LIVE_MODEL?.trim() || recentModel;
 if (!liveModel) {
 	console.error(`FAIL: no recent OpenCode model found in ${recentModelPath}; select a model in OpenCode or set WORKFLOW_GUARD_LIVE_MODEL=provider/model.`);
-	rmSync(testDir, { recursive: true, force: true });
+	if (!process.env.WG_E2E_KEEP) rmSync(testDir, { recursive: true, force: true });
 	process.exit(1);
 }
 console.log(`  Using live model: ${liveModel}`);
@@ -337,7 +412,7 @@ if (!run3AccountedFor) {
 }
 
 // Clean up
-rmSync(testDir, { recursive: true, force: true });
+if (!process.env.WG_E2E_KEEP) rmSync(testDir, { recursive: true, force: true });
 
 console.log(`\n${pass} passed, ${fail} failed, ${unavailable} live unavailable`);
 process.exit(fail ? 1 : 0);
