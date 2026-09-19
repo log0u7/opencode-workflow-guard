@@ -61,6 +61,7 @@ It is a policy and enforcement layer, not an agent harness. Policies may constra
   - Shell commands invoking `opencode auth`, `opencode config`, `opencode permission`, or `opencode run --auto`
   - Evasion-normalized: quote-concatenation (`open''code.json`), escapes (`open\c\ode`), and glob wildcards (`opencode.jso?`) are stripped before matching.
 - Collaboration commands (`gh issue`, `gh pr`, `glab issue`, `glab pr`, `az repos pr`) and document content mentioning guarded paths are not tampering: quoted arguments are command data, not shell syntax (redirect analysis runs on the quote-stripped residue), and the redirect heuristic applies to shell commands only (write/edit content is guarded by the target path check instead).
+- Plan files under `.opencode/plans/` are exempt: opencode's plan mode writes agent-authored plan markdown there, and plans are content, not configuration. Everything else under `.opencode/` (including the directory itself) stays protected.
 - **Read-only access is allowed** (`cat`, `less`, `grep`, `head`, `tail` on config files) - only modification attempts trigger the guard.
 
 ### 7. Feature-Branch Workflow
@@ -136,6 +137,7 @@ It is a policy and enforcement layer, not an agent harness. Policies may constra
 ### 20. Merged Branch & Base Freshness Guard
 - Blocks pushing to branches already merged or associated with closed PRs in GitHub or Azure DevOps.
 - Blocks creating fresh feature branches when the local base branch is behind the remote, prompting the agent to pull latest changes first.
+- Tag push refspecs are exempt: publishing an existing tag (`git push origin v1.2.0`, `git push origin refs/tags/v1.2.0`) and creating tags (`git tag v1.2.0`, `git tag -a -m ...`) are release operations, not branch mutations - only tag deletions (`git tag -d`, `git push origin :refs/tags/v1.2.0`, `--delete`) stay blocked.
 
 ### 21. Documentation Review & Synchronization Guard
 - Ensures that relevant documentation is updated whenever changes introduce new features, policies, or public tools before PR creation. Configurable via `.opencode/workflow-guard.json` (`requireDocumentation: true`) or `WORKFLOW_GUARD_REQUIRE_DOCS=1`.

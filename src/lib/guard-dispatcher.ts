@@ -55,6 +55,7 @@ import {
 	onProtectedBranch,
 	parseGitInvocation,
 	pushedProtectedBranchIn,
+	tagRefspecIn,
 } from "../policies/git.ts";
 import { extractInterpreterPayload, outsideWritePathInPayload, secretPathInPayload, writePathsInPayload } from "../policies/interpreter.ts";
 import { mcpMutationTool } from "../policies/mcp.ts";
@@ -328,6 +329,7 @@ export async function guardToolCallImpl(
 			}
 		}
 		for (const invocation of gitInvocations) {
+			if (tagRefspecIn(`git ${invocation.rest}`, invocation.repoDir)) continue;
 			if (GIT_WRITE_RE.test(`git ${invocation.rest}`) && onProtectedBranch(invocation.repoDir)) {
 				logPolicyBlock(`[workflow-guard] blocked git write on protected branch: ${command.slice(0, 120)}`);
 				return block("git", "protected_branch", branchGuardReason());
@@ -396,6 +398,7 @@ export async function guardToolCallImpl(
 		for (const invocation of gitInvocations) {
 			const pushText = `git ${invocation.rest}`;
 			if (!/\bgit\s+push\b/.test(pushText)) continue;
+			if (tagRefspecIn(pushText, invocation.repoDir)) continue;
 			const pushedBranch = pushedProtectedBranchIn(pushText, invocation.repoDir);
 			if (pushedBranch) {
 				logPolicyBlock(`[workflow-guard] blocked push to protected branch '${pushedBranch}': ${command}`);
@@ -404,6 +407,7 @@ export async function guardToolCallImpl(
 		}
 		for (const invocation of gitInvocations) {
 			if (!/\bgit\s+push\b/.test(`git ${invocation.rest}`)) continue;
+			if (tagRefspecIn(`git ${invocation.rest}`, invocation.repoDir)) continue;
 			if (onProtectedBranch(invocation.repoDir)) {
 				logPolicyBlock(`[workflow-guard] blocked push from protected branch: ${command}`);
 				return block("git", "protected_branch", branchGuardReason());

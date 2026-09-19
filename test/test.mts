@@ -455,6 +455,21 @@ check("block write of global opencode config path", blocked(await call("write", 
 check("block apply_patch to opencode.json", blocked(await call("apply_patch", { patchText: "*** Update File: opencode.json\n" }, { sessionID: "s-active" })));
 check("allow edit of normal source file", !(await call("edit", { filePath: join(root, "src", "index.ts"), oldString: "a", newString: "b" }, { sessionID: "s-active" })));
 check("allow write of docs mentioning .opencode paths (not tamper)", !(await call("write", { filePath: join(root, "docs", "guard.md"), content: "see `<project>/" + ocDir + "` and -> isProtectedPath" }, { sessionID: "s-active" })));
+check("allow write of project plan file under .opencode/plans", !(await call("write", { filePath: join(root, ".opencode", "plans", "1789589538371-plan.md"), content: "# plan" }, { sessionID: "s-active" })));
+check("block write escaping plans dir via .. (still tamper)", blocked(await call("write", { filePath: join(root, ".opencode", "plans", "..", "opencode.json"), content: "{}" }, { sessionID: "s-active" })));
+check("block write of the plans directory itself (no trailing-slash exemption)", blocked(await call("write", { filePath: join(root, ".opencode", "plans"), content: "{}" }, { sessionID: "s-active" })));
+check("block write under .opencode/plansx prefix (still tamper)", blocked(await call("write", { filePath: join(root, ".opencode", "plansx", "x.md"), content: "{}" }, { sessionID: "s-active" })));
+check("block write to user-level config plans path (exemption is project-only)", blocked(await call("write", { filePath: "/var/home/x/.config/opencode/plans/x.md", content: "{}" }, { sessionID: "s-active" })));
+// Plans dir symlinked at a config-shaped real location: lexical target is
+// exempt but the realpath fallback must still block via the user-config check.
+const plansAliasDir = mkdtempSync(join(tmpdir(), "wg-plans-alias-"));
+mkdirSync(join(plansAliasDir, ".config", "opencode"), { recursive: true });
+mkdirSync(join(plansAliasDir, ".opencode"), { recursive: true });
+symlinkSync(join(plansAliasDir, ".config", "opencode"), join(plansAliasDir, ".opencode", "plans"), "dir");
+setWorkspaceRoot(plansAliasDir);
+check("write through plans symlink into config real path blocked (realpath fallback)", blocked(await call("write", { filePath: join(plansAliasDir, ".opencode", "plans", "x.md"), content: "{}" }, { sessionID: "s-active" })));
+setWorkspaceRoot(root);
+rmSync(plansAliasDir, { recursive: true, force: true });
 console.log("- Policy 7: branch guard -");
 // Non-git workspace (current `root` is a plain temp dir): git writes allowed.
 check("non-git workspace: git commit allowed", !(await shell("git commit -m test")));
@@ -470,7 +485,8 @@ check("on main: git merge blocked", blocked(await shell("git merge feature/x")))
 	check("on main: git checkout path mutation without separator blocked", blocked(await shell("git checkout tracked.txt")));
 	check("on main: git checkout -B reset blocked", blocked(await shell("git checkout -B main HEAD~1")));
 	check("on main: git add blocked", blocked(await shell("git add tracked.txt")));
-	check("on main: git tag blocked", blocked(await shell("git tag release-test")));
+	check("on main: git tag creation allowed", !blocked(await shell("git tag release-test")));
+	check("on main: git tag -d blocked", blocked(await shell("git tag -d release-test")));
 	check("on main: git tag --list allowed", !blocked(await shell("git tag --list")));
 check("on main: git switch -c allowed (branch creation)", !(await shell("git switch -c feat/x")));
 check("on main: git status allowed", !(await shell("git status")));
@@ -2276,6 +2292,12 @@ setWorkspaceRoot(conflictRepo);
 const mergedCheck = isBranchAlreadyMergedOrClosed(conflictRepo, "feat/already-merged");
 check("isBranchAlreadyMergedOrClosed identifies branch with 0 diff from main", mergedCheck.merged);
 check("git push on already merged branch is blocked", blocked(await shell("git push origin feat/already-merged")));
+
+// Tag pushes are release operations, not branch mutations (#134).
+spawnSync("git", ["tag", "v0.3.0"], { cwd: conflictRepo });
+check("git push origin v0.3.0 allowed from merged branch", !blocked(await shell("git push origin v0.3.0")));
+check("git push origin refs/tags/v0.3.0 allowed", !blocked(await shell("git push origin refs/tags/v0.3.0")));
+check("git push origin :refs/tags/v0.3.0 still blocked", blocked(await shell("git push origin :refs/tags/v0.3.0")));
 
 // Create a branch with a genuine merge conflict against main
 spawnSync("git", ["switch", "main"], { cwd: conflictRepo });
