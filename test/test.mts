@@ -1360,6 +1360,8 @@ await new Promise((resolve) => setTimeout(resolve, 450));
 check("runVerify timeout terminates descendants behind shell pipelines", !existsSync(pipelineTimeoutMarker));
 
 console.log("- Policy 10: verification timeout resolution -");
+const previousVerifyTimeoutEnv = process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS;
+if (previousVerifyTimeoutEnv !== undefined) delete process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS;
 check("verification timeout resolution defaults to 30s", resolveVerifyTimeoutMs(root) === 30_000);
 const verifyTimeoutConfigRoot = mkdtempSync(join(tmpdir(), "wg-verify-timeout-"));
 mkdirSync(join(verifyTimeoutConfigRoot, ".opencode"));
@@ -1369,11 +1371,10 @@ check("verification timeout honors project config", resolveVerifyTimeoutMs(verif
 writeFileSync(join(verifyTimeoutConfigRoot, ".opencode", "workflow-guard.json"), JSON.stringify({ verifyTimeoutMs: -5 }));
 reloadProjectConfig(verifyTimeoutConfigRoot);
 check("verification timeout ignores invalid project config values", resolveVerifyTimeoutMs(verifyTimeoutConfigRoot) === 30_000);
-const previousVerifyTimeoutEnv = process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS;
 process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS = "120000";
-check("verification timeout env overrides project config", resolveVerifyTimeoutMs(verifyTimeoutConfigRoot) === 120_000);
-if (previousVerifyTimeoutEnv === undefined) delete process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS;
-else process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS = previousVerifyTimeoutEnv;
+check("verification timeout env overrides a valid project config", resolveVerifyTimeoutMs(verifyTimeoutConfigRoot) === 120_000);
+delete process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS;
+if (previousVerifyTimeoutEnv !== undefined) process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS = previousVerifyTimeoutEnv;
 rmSync(verifyTimeoutConfigRoot, { recursive: true, force: true });
 let windowsCleanupFinished = false;
 const windowsCleanup = terminateProcessTree(1234, () => {}, "win32", async (pid) => {
