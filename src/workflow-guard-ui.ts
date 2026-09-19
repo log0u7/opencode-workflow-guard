@@ -89,12 +89,12 @@ export function formatBadge(): { text: string; isBlocked: boolean } {
 
 type TuiContext = Plugin.Context;
 
-const TOGGLE_OPTIONS: Array<{ key: ProjectToggle; description: string }> = [
-	{ key: "recoveryCheckpoints", description: "Toggle durable pre-run Git checkpoints" },
-	{ key: "projectMemory", description: "Toggle durable local project memory" },
-	{ key: "learning", description: "Toggle evidence-based learning tools" },
-	{ key: "titleSettleWorkaround", description: "Delay automatic continuation while OpenCode generates a session title" },
-	{ key: "ralphMode", description: "Opt into bounded autonomous continuation of already-owned todos" },
+const TOGGLE_OPTIONS: Array<{ key: ProjectToggle; label: string; description: string }> = [
+	{ key: "recoveryCheckpoints", label: "Recovery checkpoints", description: "Toggle durable pre-run Git checkpoints" },
+	{ key: "projectMemory", label: "Project memory", description: "Toggle durable local project memory" },
+	{ key: "learning", label: "Learner mode", description: "Toggle evidence-based learning tools" },
+	{ key: "titleSettleWorkaround", label: "Title settle workaround", description: "Delay automatic continuation while OpenCode generates a session title" },
+	{ key: "ralphMode", label: "Ralph mode", description: "Opt into bounded autonomous continuation of already-owned todos" },
 ];
 
 export const WorkflowGuardTuiV2 = (ctx: TuiContext) => {
@@ -120,7 +120,7 @@ export const WorkflowGuardTuiV2 = (ctx: TuiContext) => {
 					const choice = await ctx.ui.dialog.select<ProjectToggle>({
 						title: "Workflow Guard Project Options",
 						options: TOGGLE_OPTIONS.map((option) => ({
-							title: `${option.key}: ${current.get(option.key) ? "On" : "Off"}`,
+							title: `${option.label}: ${current.get(option.key) ? "On" : "Off"}`,
 							value: option.key,
 							description: option.description,
 						})),
@@ -178,7 +178,7 @@ export const WorkflowGuardTui: TuiPlugin = async (api) => {
 					title: "Workflow Guard Project Options",
 					current: undefined,
 					options: TOGGLE_OPTIONS.map((option) => ({
-						title: `${option.key}: ${readProjectOption(root, option.key) ? "On" : "Off"}`,
+						title: `${option.label}: ${readProjectOption(root, option.key) ? "On" : "Off"}`,
 						value: option.key,
 						description: option.description,
 						onSelect: () => toggle(option.key),

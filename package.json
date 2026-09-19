@@ -50,7 +50,8 @@
     "@opencode-ai/plugin": "latest",
     "@opencode/plugin": "latest",
     "@opentui/solid": "latest",
-    "jsonc-parser": "latest"
+    "jsonc-parser": "latest",
+    "@opencode/ai": "latest"
   },
   "devDependencies": {
     "@changesets/cli": "latest",

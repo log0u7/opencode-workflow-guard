@@ -7,8 +7,9 @@ import { parse as parseJsonc } from "jsonc-parser";
 let pass = 0;
 let fail = 0;
 let unavailable = 0;
-const check = (name: string, cond: unknown): void => {
+const check = (name: string, cond: unknown): boolean => {
 	cond ? (pass++, console.log("  ok  " + name)) : (fail++, console.log("FAIL  " + name));
+	return Boolean(cond);
 };
 const providerUnavailable = (output: string): boolean =>
 	/available credits|insufficient credits|rate limit|too many requests|capacity|overloaded/i.test(output);
@@ -204,27 +205,40 @@ import { Plugin } from "@opencode/plugin";
 
 writeFileSync(${JSON.stringify(importedMarker)}, "imported\\n");
 
-export const WorkflowGuardE2E = async (ctx: any) => {
-	const { WorkflowGuard } = await import("../workflow-guard-source/workflow-guard.ts");
-	// Shape a V1-style context from whatever generation's context we received:
-	// V2 ctx.location = { directory, project } while V1 passed directory/worktree directly.
-	const directory = ctx?.location?.directory ?? ctx?.directory ?? process.cwd();
-	const v1ctx = { directory, worktree: directory, project: ctx?.location?.project ?? ctx?.project, client: undefined };
-	const hooks = await WorkflowGuard(v1ctx);
-	const status = await hooks.tool?.guard_status?.execute({}, { sessionID: "headless-e2e", directory, worktree: directory });
-	const why = await hooks.tool?.guard_why?.execute({ tool: "bash", input: { command: "git push origin main" } }, { sessionID: "headless-e2e", directory, worktree: directory });
-	writeFileSync(${JSON.stringify(accountabilityMarker)}, JSON.stringify({ status: JSON.parse(String(status)), why: JSON.parse(String(why)) }) + "\\n");
-	writeFileSync(${JSON.stringify(initializedMarker)}, "initialized\\n");
-	return hooks;
+// Load the shipped dual plugin: V1 probes call server(), V2 runs the real
+// setup(ctx) against the real plugin context and probes the REGISTERED tools.
+const loaded = await import("../workflow-guard-source/workflow-guard.ts");
+
+const headlessToolContext = { sessionID: "headless-e2e", agent: "build", messageID: "msg_headless", id: "call_headless", progress: async () => {} };
+
+const runV2Probes = async (ctx: any) => {
+\tawait loaded.default.setup(ctx);
+\tconst tools = await ctx.tool.list();
+\tconst byId = (id: string) => tools.find((t: any) => t.id === id);
+\tconst todowrite = byId("todowrite");
+\tconst guardStatus = byId("guard_status");
+\tconst guardWhy = byId("guard_why");
+\tconst pick = (r: any) => (typeof r?.content === "string" ? r.content : JSON.stringify(r));
+\tconst statusRes = guardStatus ? await guardStatus.execute({}, headlessToolContext) : undefined;
+\tconst whyRes = guardWhy ? await guardWhy.execute({ tool: "bash", input: { command: "git push origin main" } }, headlessToolContext) : undefined;
+\twriteFileSync(${JSON.stringify(accountabilityMarker)}, JSON.stringify({
+\t\ttools: tools.map((t: any) => t.id),
+\t\ttodowriteEnriched: Boolean(todowrite?.description?.includes("Workflow Guard lifecycle")),
+\t\tstatus: JSON.parse(pick(statusRes)),
+\t\twhy: JSON.parse(pick(whyRes)),
+\t}) + "\\n");
+\twriteFileSync(${JSON.stringify(initializedMarker)}, "initialized\\n");
 };
 
-const probe = async (ctx: any) => {
-	try {
-		return await WorkflowGuardE2E(ctx);
-	} catch (error) {
-		writeFileSync(${JSON.stringify(accountabilityMarker)}, JSON.stringify({ error: String((error as Error)?.message ?? error), stack: String((error as Error)?.stack ?? "") }) + "\\n");
-		throw error;
-\t}
+const runV1Probes = async (ctx: any) => {
+\tconst hooks = await loaded.default.server(ctx);
+\tconst directory = ctx?.location?.directory ?? ctx?.directory ?? process.cwd();
+\tconst toolCtx = { sessionID: "headless-e2e", directory, worktree: directory };
+\tconst status = await hooks.tool?.guard_status?.execute({}, toolCtx);
+\tconst why = await hooks.tool?.guard_why?.execute({ tool: "bash", input: { command: "git push origin main" } }, toolCtx);
+\twriteFileSync(${JSON.stringify(accountabilityMarker)}, JSON.stringify({ status: JSON.parse(String(status)), why: JSON.parse(String(why)) }) + "\\n");
+\twriteFileSync(${JSON.stringify(initializedMarker)}, "initialized\\n");
+\treturn hooks;
 };
 
 export default {
@@ -232,11 +246,16 @@ export default {
 \t\tid: "workflow-guard-e2e",
 \t\tasync setup(ctx: any) {
 \t\t\twriteFileSync(${JSON.stringify(importedMarker)}, "imported\\n");
-\t\t\tawait probe(ctx);
+\t\t\ttry {
+\t\t\t\tawait runV2Probes(ctx);
+\t\t\t} catch (error) {
+\t\t\t\twriteFileSync(${JSON.stringify(accountabilityMarker)}, JSON.stringify({ error: String((error as Error)?.message ?? error), stack: String((error as Error)?.stack ?? "") }) + "\\n");
+\t\t\t\tthrow error;
+\t\t\t}
 \t\t},
 \t}),
 \tserver: async (ctx: any) => {
-\t\treturn await probe(ctx);
+\t\treturn await runV1Probes(ctx);
 \t},
 };
 `);
@@ -338,6 +357,14 @@ try {
 	headlessAccountability = JSON.parse(readFileSync(accountabilityMarker, "utf8"));
 } catch {}
 check("headless OpenCode runtime exposes structured guard status and why without TUI", headlessAccountability?.status?.workspaceRoot === testDir && headlessAccountability?.why?.policy === "git" && headlessAccountability?.why?.code === "protected_branch_push");
+if (isOpenCodeV2) {
+	// The V2 adapter runs the shipped setup(ctx) for real; verify the
+	// registered tool surface. Builtin description enrichment is best-effort:
+	// builtins are not visible to ctx.tool.list() during plugin setup, so
+	// todowriteEnriched is reported but not asserted.
+	check("V2 setup registers custom guard tools", (headlessAccountability?.tools ?? []).includes("guard_status") && (headlessAccountability?.tools ?? []).includes("guard_why"));
+	console.log(`  note: builtin todowrite description enriched under V2: ${headlessAccountability?.todowriteEnriched === true ? "yes" : "unknown at setup time"}`);
+}
 
 if (process.env.WORKFLOW_GUARD_LIVE_E2E !== "1") {
 	console.log("SKIP: model-driven policy probes require WORKFLOW_GUARD_LIVE_E2E=1.");

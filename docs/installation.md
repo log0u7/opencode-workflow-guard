@@ -6,7 +6,7 @@
 
 ## Requirements
 
-- **OpenCode >= 1.18** (requires the `GET /session/:id/todo` endpoint and V1 `PluginModule` loader).
+- **OpenCode >= 1.18** (V1: requires the `GET /session/:id/todo` endpoint and the V1 `PluginModule` loader) or **OpenCode 2.x** (V2: loads through the `@opencode/plugin` API; the current todo list is reconstructed from the session message history because V2 has no todo endpoint).
 - **Node.js >= 22.18** or **Bun** (for running test scripts directly).
 
 ---
@@ -19,10 +19,11 @@ Install the current published version with OpenCode's plugin command:
 
 ```bash
 VERSION=$(npm view opencode-workflow-guard version)
-opencode plugin "opencode-workflow-guard@$VERSION" --global --force
+opencode plugin add "opencode-workflow-guard@$VERSION"                    # OpenCode 2.x
+opencode plugin "opencode-workflow-guard@$VERSION" --global --force       # OpenCode 1.x
 ```
 
-OpenCode documents `opencode plugin <module>` as the command to install a plugin and update its config, `--global` as global installation, and `--force` as replacing an existing plugin version. Workflow Guard exposes both server and TUI targets, so OpenCode detects both and updates their global configuration files. Restart OpenCode after installation because configuration is loaded at startup. See the [OpenCode plugin CLI documentation](https://opencode.ai/docs/cli/#plugin).
+OpenCode 2 documents `opencode plugin add <package>` as the command to install a plugin and add it to the global configuration; OpenCode 1 documents `opencode plugin <module>` with `--global` and `--force`. Workflow Guard exposes both server and TUI targets, so OpenCode detects both and updates their global configuration files (OpenCode 2 uses one global `cli.json` for terminal-client settings). Restart OpenCode after installation because configuration is loaded at startup. See the [OpenCode plugin CLI documentation](https://opencode.ai/docs/cli/#plugin).
 
 Use the same two commands to upgrade after a Workflow Guard release. Keep the explicit version in OpenCode's configuration rather than relying on a bare package name or `@latest`: OpenCode caches npm plugins, and an already-populated `@latest` cache key may continue resolving to the version that originally populated it. An explicit new version creates a new package-cache key without manually deleting OpenCode's cache.
 

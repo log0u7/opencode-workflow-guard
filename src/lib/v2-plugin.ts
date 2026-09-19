@@ -17,6 +17,7 @@
 
 import { Plugin } from "@opencode/plugin";
 import { Message } from "@opencode/ai";
+import { z } from "zod";
 import { join, resolve } from "node:path";
 import type { TodoItem, TodoSdkClient } from "./types.ts";
 import { findGitRoot, reloadProjectConfig } from "./project-config.ts";
@@ -49,7 +50,7 @@ import { createCustomTools, buildWorkflowGuardSystemGuidance } from "./custom-to
 import { isReadOnlyRole } from "./guard-dispatcher.ts";
 import { ToolInvocationLifecycle } from "./tool-lifecycle.ts";
 import { ToolOutcomeTracker, type ToolOutcomePart } from "./tool-outcomes.ts";
-import { EDIT_TOOL_NAMES, fetchParentSession, effectiveTodos } from "../policies/todo.ts";
+import { EDIT_TOOL_NAMES, fetchParentSession, fetchParentSessionID, effectiveTodos } from "../policies/todo.ts";
 import { currentGitBranch, isProtectedBranchName } from "../policies/git.ts";
 import { checkCompletionClaims } from "../policies/completion.ts";
 import { releaseFileClaims } from "../policies/file-claims.ts";
@@ -57,7 +58,7 @@ import { beginReadObservation, recordSuccessfulRead, clearReadFingerprints } fro
 import { editTargets, runPostEditValidators, snapshotFile } from "../policies/post-edit-validation.ts";
 import { audit, summarizeInput } from "./audit.ts";
 import { asRecord, showBlockToast, isSensitiveEnvKey } from "./utils.ts";
-import { clearContinuationState, continueUnfinishedSession, recordUserMessage } from "../policies/continuation.ts";
+import { clearContinuationState, continueUnfinishedSession, isGeneratedContinuationMessage, recordUserMessage } from "../policies/continuation.ts";
 import { createRecoveryCheckpoint, finalizeRecoveryCheckpoint, nextRecoveryRun } from "./checkpoint.ts";
 import { buildCompactionContext, guardToolCall } from "../workflow-guard.ts";
 
@@ -93,6 +94,10 @@ async function fetchTodosFromContext(ctx: V2Context, sessionID: string): Promise
 }
 
 function createV2SdkClient(ctx: V2Context): TodoSdkClient {
+	// V2 has no server-side log API or TUI surface, so app.log degrades to
+	// console logging and showBlockToast becomes a no-op. Block reasons still
+	// reach the agent through the thrown tool-hook error; keep this adapter
+	// from logging anything beyond guard decision summaries.
 	return {
 		app: {
 			log: async ({ body }) => {
@@ -193,19 +198,21 @@ export const WorkflowGuardV2 = async (ctx: V2Context) => {
 			editor.add({
 				name,
 				description: definition.description,
-				input: definition.args as never,
-				execute: async (input, toolContext) => {
-					const result = await definition.execute(input, {
+				// definition.args is a V1 zod raw shape (plain object of zod fields);
+				// wrap it so the V2 registry receives a real StandardSchemaV1.
+				input: z.object(definition.args as unknown as z.ZodRawShape),
+				execute: async (rawInput: unknown, toolContext: { sessionID: string; id: string }) => {
+					const result = await (definition.execute as (input: unknown, context: unknown) => Promise<unknown>)(rawInput, {
 						sessionID: toolContext.sessionID,
 						worktree: getSessionWorkspace(toolContext.sessionID) ?? effectiveRoot,
 						directory: effectiveRoot,
-					} as never);
+					});
 					const text = typeof result === "string" ? result : (result as { output?: string } | undefined)?.output;
 					return {
 						content: typeof text === "string" ? text : JSON.stringify(result),
 					};
 				},
-			});
+			} as never);
 		}
 		for (const target of ENRICHMENT_TARGETS) {
 			for (const id of target.candidates) {
@@ -260,7 +267,7 @@ export const WorkflowGuardV2 = async (ctx: V2Context) => {
 		});
 	});
 
-	await ctx.tool.hook("execute.after", (event) => {
+	await ctx.tool.hook("execute.after", async (event) => {
 		const startedAt = toolLifecycle.finish(event.sessionID, event.id);
 		const outcome = toolOutcomes.recordFallbackCompleted(event.sessionID, event.id, event.tool, startedAt === undefined ? undefined : Date.now() - startedAt);
 		if (outcome) {
@@ -283,7 +290,7 @@ export const WorkflowGuardV2 = async (ctx: V2Context) => {
 		if (event.status === "error") return;
 		const pending = toolLifecycle.takePostEditSnapshots(event.sessionID, event.id);
 		if (!pending) return;
-		void runWithRuntimeState(pending.root, client, async () => {
+		await runWithRuntimeState(pending.root, client, async () => {
 			const reports = await Promise.all(pending.snapshots.map((before) => runPostEditValidators(pending.root, before)));
 			const report = reports.filter((value): value is string => Boolean(value)).join("\n\n");
 			if (!report) return;
@@ -321,6 +328,7 @@ export const WorkflowGuardV2 = async (ctx: V2Context) => {
 	await ctx.session.hook("compaction", async (event) => {
 		try {
 			const sessionID = event.sessionID;
+			const parentID = sessionID ? await fetchParentSessionID(sessionID) : undefined;
 			const todos = await effectiveTodos(sessionID);
 			const active = todos?.filter((t) => {
 				const s = String(t.status ?? "");
@@ -329,8 +337,10 @@ export const WorkflowGuardV2 = async (ctx: V2Context) => {
 			const branch = currentGitBranch(effectiveRoot) ?? "unknown";
 			const isProtected = branch !== "unknown" && isProtectedBranchName(branch, effectiveRoot);
 			const sessionMutationCount = getSessionMutationCount(sessionID);
-			const lastV = sessionVerifyResults.get(sessionID);
-			const lastR = sessionReviews.get(sessionID);
+			// Mirror V1: zero-mutation subagent sessions inherit the parent's
+			// verification/review evidence so inherited-todo work keeps fresh gates.
+			const lastV = sessionVerifyResults.get(sessionID) ?? (sessionMutationCount === 0 && parentID ? sessionVerifyResults.get(parentID) : undefined);
+			const lastR = sessionReviews.get(sessionID) ?? (sessionMutationCount === 0 && parentID ? sessionReviews.get(parentID) : undefined);
 			const mutationCountVal = sessionMutationCount;
 
 			const priorityContextBlocks: string[] = [];
@@ -341,8 +351,13 @@ export const WorkflowGuardV2 = async (ctx: V2Context) => {
 						`- [${String(t.status) === "in_progress" ? "IN PROGRESS" : "PENDING"}] ${String(t.content ?? "").slice(0, 300)}`,
 				);
 				if (active.length > 20) lines.push(`- ... ${active.length - 20} more active task(s) omitted`);
+				const attribution = parentID
+					? ` (Subagent session: ${sessionID}, Parent: ${parentID})`
+					: sessionID
+						? ` (Session: ${sessionID})`
+						: "";
 				priorityContextBlocks.push(
-					`## Active Tasks (Session: ${sessionID})\n` +
+					`## Active Tasks${attribution}\n` +
 						lines.join("\n") +
 						"\nComplete tasks efficiently - mark finished items as completed and address remaining ones.",
 				);
@@ -392,7 +407,10 @@ export const WorkflowGuardV2 = async (ctx: V2Context) => {
 	await ctx.session.hook("prompt", async (event) => {
 		const sessionID = event.sessionID;
 		try {
-			if (isRecoveryCheckpointsEnabled(effectiveRoot)) {
+			// V2 prompt hooks do not run for synthetic messages, but keep the V1
+			// generated-continuation guard so checkpoint creation cannot churn on
+			// continuation prompts admitted through any other path.
+			if (isRecoveryCheckpointsEnabled(effectiveRoot) && !isGeneratedContinuationMessage(sessionID, event.messageID)) {
 				const parent = await runWithRuntimeState(effectiveRoot, client, () => fetchParentSession(sessionID));
 				if (parent.ok && !parent.parentID) {
 					const run = nextRecoveryRun(effectiveRoot, sessionID);
@@ -485,11 +503,13 @@ async function handleV2Event(
 		if (!sessionID || !Array.isArray(data?.content)) return;
 		for (const part of data.content as Array<Record<string, unknown>>) {
 			if (part?.type !== "tool") continue;
-			const toolState = part.state as { status?: unknown; error?: { message?: string } | string; time?: { ran?: unknown; completed?: unknown } } | undefined;
+			const toolState = part.state as { status?: unknown; error?: { message?: string } | string } | undefined;
 			const status = toolState?.status;
 			if (status !== "completed" && status !== "error") continue;
-			const start = typeof toolState?.time?.ran === "number" ? toolState.time.ran : undefined;
-			const end = typeof toolState?.time?.completed === "number" ? toolState.time.completed : undefined;
+			// V2 keeps timing on the tool part itself (part.time), not inside state.
+			const partTime = part.time as { ran?: unknown; completed?: unknown } | undefined;
+			const start = typeof partTime?.ran === "number" ? partTime.ran : undefined;
+			const end = typeof partTime?.completed === "number" ? partTime.completed : undefined;
 			const mapped: ToolOutcomePart = {
 				type: "tool",
 				sessionID,
@@ -583,17 +603,23 @@ async function handleV2Event(
 	}
 
 	if (event.type === "permission.asked" || event.type === "permission.replied") {
-		const data = event.data as { sessionID?: unknown; response?: unknown } | undefined;
+		// V2 permission.replied data carries `reply` ("once" | "always" | "reject").
+		const data = event.data as { sessionID?: unknown; reply?: unknown } | undefined;
 		audit({
 			ts: new Date().toISOString(),
 			sessionID: typeof data?.sessionID === "string" ? data.sessionID : undefined,
 			tool: event.type ?? "event",
 			decision:
-				event.type === "permission.replied" && /reject|deny/i.test(String(data?.response ?? ""))
+				event.type === "permission.replied" && /reject|deny/i.test(String(data?.reply ?? ""))
 					? "block"
 					: "allow",
 			input: summarizeInput(event.data),
 		});
 		return;
 	}
+	// Note on V1 events without a V2 counterpart:
+	// - `command.executed`: no V2 event stream equivalent (audit-only in V1; dropped).
+	// - `permission.updated`: replaced by `permission.asked`/`permission.replied` above.
+	// - `session.created`: exists in the V2 union but needed no V1 behavior beyond
+	//   the audit above; session state resets happen on `session.deleted`.
 }
