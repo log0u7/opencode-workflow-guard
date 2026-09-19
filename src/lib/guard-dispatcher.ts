@@ -34,6 +34,7 @@ import {
 	getGitStatusSummary,
 	getGitWorktreeFingerprint,
 	runVerify,
+	resolveVerifyTimeoutMs,
 	snipVerifyOutput,
 } from "./verify.ts";
 import { detectShellMutation, extractPatchPaths, guardShellMutation, isPathOutsideWorkspace } from "../policies/boundary.ts";
@@ -180,7 +181,7 @@ export async function guardToolCallImpl(
 					const isFresh = verifyResult !== undefined && verifyResult.passed && verifyResult.command === command && isEvidenceFresh(verificationEvidence(verifyResult, sessionID), currentSubject, mutationTimestamp);
 					if (!isFresh) {
 						if (context?.simulate) return block("verification", "verification_required", `Blocked: finalization requires fresh passing verification (${command}).`);
-						const result = await runVerify(command, currentRoot);
+						const result = await runVerify(command, currentRoot, resolveVerifyTimeoutMs(currentRoot));
 						recordVerifyResult(command, result, sessionID, currentRoot);
 						if (!result.passed) {
 							const tail = snipVerifyOutput(result.output, result.passed).slice(-500);

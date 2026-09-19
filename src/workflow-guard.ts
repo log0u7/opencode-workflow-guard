@@ -188,6 +188,7 @@ export function managedConfigDiagnostic(platform = process.platform, env: NodeJS
 // ── Verification engine ──────────────────────────────────────────────────────
 import {
 	detectVerifyCommand,
+	resolveVerifyTimeoutMs,
 	runVerify,
 	snipVerifyOutput,
 	getCurrentGitCommitHash,
@@ -197,6 +198,7 @@ import {
 
 export {
 	detectVerifyCommand,
+	resolveVerifyTimeoutMs,
 	runVerify,
 	snipVerifyOutput,
 	getCurrentGitCommitHash,
