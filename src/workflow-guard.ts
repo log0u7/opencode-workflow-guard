@@ -239,6 +239,7 @@ import {
 	clearContinuationState,
 	continueUnfinishedSession,
 	isGeneratedContinuationMessage,
+	markInterrupted,
 	recordUserMessage,
 } from "./policies/continuation.ts";
 import {
@@ -763,11 +764,23 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 				}
 			}
 			if (event?.type === "message.updated") {
-				const info = (event.properties as { info?: { id?: unknown; role?: unknown; sessionID?: unknown } })?.info;
+				const info = (event.properties as { info?: { id?: unknown; role?: unknown; sessionID?: unknown; error?: { name?: unknown } } })?.info;
 				if (info?.role === "user" && typeof info.sessionID === "string") {
 					await runWithRuntimeState(effectiveRoot, ctx.client, () => {
 						recordUserMessage(info.sessionID as string, typeof info.id === "string" ? info.id : undefined);
 					});
+				}
+				// A user-initiated interrupt (Esc) surfaces as an aborted
+				// assistant message: stop automatic continuation for the
+				// session until genuine user input arrives.
+				if (info?.role === "assistant" && typeof info.sessionID === "string" && info.error?.name === "MessageAbortedError") {
+					await runWithRuntimeState(effectiveRoot, ctx.client, () => markInterrupted(info.sessionID as string));
+				}
+			}
+			if (event?.type === "session.error") {
+				const props = event.properties as { sessionID?: unknown; error?: { name?: unknown } };
+				if (typeof props?.sessionID === "string" && props?.error?.name === "MessageAbortedError") {
+					await runWithRuntimeState(effectiveRoot, ctx.client, () => markInterrupted(props.sessionID as string));
 				}
 			}
 			if (event?.type === "session.deleted") {
