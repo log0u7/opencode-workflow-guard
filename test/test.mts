@@ -445,6 +445,8 @@ check("allow normal command", !(await shell("ls -la && git status")));
 const ocDir = ".open" + "code/plans/";
 check("allow gh issue create mentioning .opencode paths (not tamper)", !(await shell(`gh issue create --repo example/proj --title t --body 'see <project>/${ocDir}'`)));
 check("compound collaboration + tamper still blocked", blocked(await shell(`gh issue create --repo example/proj --title t && echo x > open${"code.json"}`)));
+check("collaboration command with real redirect to global config still blocked", blocked(await shell(`gh issue list > /var/home/x/.config/open${"code"}/opencode.json`)));
+check("collaboration command with redirect outside workspace still blocked", blocked(await shell(`gh pr create --title t > /tmp/wg-escape-probe`)));
 
 console.log("- Policy 6: tamper via edit tools (path protection) -");
 check("block edit of project opencode.json", blocked(await call("edit", { filePath: join(root, "opencode.json"), oldString: "a", newString: "b" }, { sessionID: "s-active" })));

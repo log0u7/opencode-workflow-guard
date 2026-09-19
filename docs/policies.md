@@ -60,7 +60,7 @@ It is a policy and enforcement layer, not an agent harness. Policies may constra
   - Direct edits of the same paths through the `edit`/`write`/`apply_patch` tools
   - Shell commands invoking `opencode auth`, `opencode config`, `opencode permission`, or `opencode run --auto`
   - Evasion-normalized: quote-concatenation (`open''code.json`), escapes (`open\c\ode`), and glob wildcards (`opencode.jso?`) are stripped before matching.
-- Collaboration commands (`gh issue`, `gh pr`, `glab issue`, `glab pr`, `az repos pr`) and document content mentioning guarded paths are not tampering: their quoted arguments never write local configuration, and the redirect heuristic applies to shell commands only (write/edit content is guarded by the target path check instead).
+- Collaboration commands (`gh issue`, `gh pr`, `glab issue`, `glab pr`, `az repos pr`) and document content mentioning guarded paths are not tampering: quoted arguments are command data, not shell syntax (redirect analysis runs on the quote-stripped residue), and the redirect heuristic applies to shell commands only (write/edit content is guarded by the target path check instead).
 - **Read-only access is allowed** (`cat`, `less`, `grep`, `head`, `tail` on config files) - only modification attempts trigger the guard.
 
 ### 7. Feature-Branch Workflow

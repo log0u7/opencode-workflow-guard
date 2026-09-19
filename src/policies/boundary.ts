@@ -303,12 +303,17 @@ export function secretSourceInFilesystemCommand(segment: string): string | undef
 	return undefined;
 }
 
+// Remove single- and double-quoted spans from a shell segment. Used to
+// analyze the residue of collaboration invocations: quoted arguments are
+// command data and can never be shell redirects, while unquoted redirects
+// keep receiving full validation.
+function stripQuotedSpans(segment: string): string {
+	return segment.replace(/'[^'\n]*'/g, " ").replace(/"[^"\n]*"/g, " ");
+}
+
 export function detectShellMutation(command: string): ShellMutation | undefined {
-	for (const segment of command.split(/[\n|;&]+/)) {
-		// Collaboration invocations never write local files; their quoted
-		// arguments can contain redirect-looking text that is not a shell
-		// redirect.
-		if (isCollaborationInvocation(segment)) continue;
+	for (const rawSegment of command.split(/[\n|;&]+/)) {
+		const segment = isCollaborationInvocation(rawSegment) ? stripQuotedSpans(rawSegment) : rawSegment;
 		const simpleMutations = simpleFilesystemMutations(segment);
 		if (simpleMutations.length > 0) return simpleMutations[0];
 		const teeTargets = teeTargetsIn(segment);
@@ -332,10 +337,11 @@ export async function guardShellMutation(
 ): Promise<string | undefined> {
 	const root = getWorkspaceRoot();
 	let hasMutation = false;
-	for (const segment of command.split(/[\n|;&]+/)) {
-		// Same collaboration exemption as detectShellMutation: quoted
-		// arguments of gh/glab/az PR/issue commands are not shell redirects.
-		if (isCollaborationInvocation(segment)) continue;
+	for (const rawSegment of command.split(/[\n|;&]+/)) {
+		// Same residue analysis as detectShellMutation: quoted arguments of
+		// gh/glab/az PR/issue commands are command data, not shell redirects,
+		// while unquoted redirects still get full validation below.
+		const segment = isCollaborationInvocation(rawSegment) ? stripQuotedSpans(rawSegment) : rawSegment;
 		const secretSource = secretSourceInFilesystemCommand(segment);
 		if (secretSource) {
 			return `Blocked: shell command would copy, move, or link sensitive file '${secretSource}' under a non-secret name.`;
