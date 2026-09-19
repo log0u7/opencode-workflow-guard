@@ -155,6 +155,17 @@ export function getGitWorktreeFingerprint(root: string): string | undefined {
 	return undefined;
 }
 
+// Verification timeout: WORKFLOW_GUARD_VERIFY_TIMEOUT_MS env wins, then the
+// project config verifyTimeoutMs, then the 30s default. The 30s default is
+// too short for large suites (this repository's own suite exceeds it), so
+// projects can raise it without changing the verify command.
+export function resolveVerifyTimeoutMs(root: string): number {
+	const envValue = Number(process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS);
+	if (Number.isFinite(envValue) && envValue > 0) return envValue;
+	const configured = getProjectConfig(root).verifyTimeoutMs;
+	return typeof configured === "number" && Number.isFinite(configured) && configured > 0 ? configured : 30_000;
+}
+
 export async function runVerify(
 	command: string,
 	root: string,
