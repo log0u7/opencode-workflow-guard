@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.1
+
+### Patch Changes
+
+- b003082: User-initiated interrupts (Esc) no longer trigger automatic continuation: the guard marks the session interrupted on MessageAbortedError (session.error or the aborted assistant message) and resumes its no-silent-early-exit behavior only after genuine user input, mirroring the ralph user_stopped semantics.
+- 75847e4: Settings-tamper scan no longer blocks collaboration commands (`gh`/`glab` issue|pr, `az repos pr`) or document content mentioning guarded paths; the redirect heuristic is shell-only.
+- dd01be6: Verification timeout is configurable: set `verifyTimeoutMs` in the project config or `WORKFLOW_GUARD_VERIFY_TIMEOUT_MS` in the environment (env wins) to raise the 30-second default for suites that legitimately exceed it.
+
 ## 1.13.0
 
 ### Minor Changes
