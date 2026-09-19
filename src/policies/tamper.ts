@@ -36,11 +36,23 @@ export function normalizeGlobPathEvasion(text: string): string {
 		.replace(/opencode\.[?*]/gi, ocJson);
 }
 
+// Collaboration invocations (hosted-git/PR/issue CLIs) never write local
+// configuration: their arguments may legitimately mention guarded paths.
+const COLLABORATION_INVOCATION_PATTERNS: RegExp[] = [
+	/^\s*(?:gh|glab)\s+(?:issue|pr)\b/,
+	/^\s*az\s+repos\s+pr\b/,
+];
+
+export function isCollaborationInvocation(segment: string): boolean {
+	return COLLABORATION_INVOCATION_PATTERNS.some((re) => re.test(segment));
+}
+
 export function isSettingsTamper(command: string): boolean {
 	const segments = command.split(/[\n|;&]+/).map((s) =>
 		normalizeGlobPathEvasion(normalizeShellEvasion(s)),
 	);
 	return segments.some((segment) =>
+		!isCollaborationInvocation(segment) &&
 		SETTINGS_TAMPER_PATTERNS.some((re) => re.test(segment)),
 	);
 }

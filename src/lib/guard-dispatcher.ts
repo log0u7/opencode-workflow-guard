@@ -249,7 +249,6 @@ export async function guardToolCallImpl(
 				}
 			}
 		}
-		for (const content of extractEditContent(input)) if (isSettingsTamper(content)) return block("tamper", "settings_tamper", PROTECTED_PATH_REASON);
 		if (onProtectedBranch(currentRoot)) {
 			logPolicyBlock(`[workflow-guard] blocked ${toolName}: on protected branch ${currentGitBranch(currentRoot)}`);
 			return block("git", "protected_branch", branchGuardReason());

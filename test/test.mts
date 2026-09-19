@@ -442,6 +442,11 @@ check("block auth with global flags (--dir)", blocked(await shell(`${ocCli} --di
 check("block config with global flags (-d)", blocked(await shell(`${ocCli} -d . ${"con" + "fig"} edit`)));
 check("block permission with global flags (--workspace)", blocked(await shell(`${ocCli} --workspace . ${"perm" + "ission"} grant`)));
 check("allow normal command", !(await shell("ls -la && git status")));
+const ocDir = ".open" + "code/plans/";
+check("allow gh issue create mentioning .opencode paths (not tamper)", !(await shell(`gh issue create --repo example/proj --title t --body 'see <project>/${ocDir}'`)));
+check("compound collaboration + tamper still blocked", blocked(await shell(`gh issue create --repo example/proj --title t && echo x > open${"code.json"}`)));
+check("collaboration command with real redirect to global config still blocked", blocked(await shell(`gh issue list > /var/home/x/.config/open${"code"}/opencode.json`)));
+check("collaboration command with redirect outside workspace still blocked", blocked(await shell(`gh pr create --title t > /tmp/wg-escape-probe`)));
 
 console.log("- Policy 6: tamper via edit tools (path protection) -");
 check("block edit of project opencode.json", blocked(await call("edit", { filePath: join(root, "opencode.json"), oldString: "a", newString: "b" }, { sessionID: "s-active" })));
@@ -449,6 +454,7 @@ check("block write of .opencode/project config", blocked(await call("write", { f
 check("block write of global opencode config path", blocked(await call("write", { filePath: "/var/home/x/.config/opencode/opencode.json", content: "{}" }, { sessionID: "s-active" })));
 check("block apply_patch to opencode.json", blocked(await call("apply_patch", { patchText: "*** Update File: opencode.json\n" }, { sessionID: "s-active" })));
 check("allow edit of normal source file", !(await call("edit", { filePath: join(root, "src", "index.ts"), oldString: "a", newString: "b" }, { sessionID: "s-active" })));
+check("allow write of docs mentioning .opencode paths (not tamper)", !(await call("write", { filePath: join(root, "docs", "guard.md"), content: "see `<project>/" + ocDir + "` and -> isProtectedPath" }, { sessionID: "s-active" })));
 check("allow write of project plan file under .opencode/plans", !(await call("write", { filePath: join(root, ".opencode", "plans", "1789589538371-plan.md"), content: "# plan" }, { sessionID: "s-active" })));
 check("block write escaping plans dir via .. (still tamper)", blocked(await call("write", { filePath: join(root, ".opencode", "plans", "..", "opencode.json"), content: "{}" }, { sessionID: "s-active" })));
 check("block write of the plans directory itself (no trailing-slash exemption)", blocked(await call("write", { filePath: join(root, ".opencode", "plans"), content: "{}" }, { sessionID: "s-active" })));
