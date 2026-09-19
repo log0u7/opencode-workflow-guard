@@ -14,6 +14,7 @@ type ContinuationState = {
 	generatedMessageIDs: Map<string, Set<string>>;
 	lastUserMessageIDs: Map<string, string>;
 	inFlight: Set<string>;
+	interrupted: Set<string>;
 };
 export type RalphOutcome = "running" | "completed" | "blocked" | "budget_exhausted" | "user_stopped";
 const states = new WeakMap<object, Map<string, ContinuationState>>();
@@ -43,7 +44,7 @@ function getState(): ContinuationState | undefined {
 	const root = projectRootKey(getWorkspaceRoot());
 	let state = clientStates.get(root);
 	if (!state) {
-		state = { counts: new Map(), ralphOutcomes: new Map(), generatedMessageIDs: new Map(), lastUserMessageIDs: new Map(), inFlight: new Set() };
+		state = { counts: new Map(), ralphOutcomes: new Map(), generatedMessageIDs: new Map(), lastUserMessageIDs: new Map(), inFlight: new Set(), interrupted: new Set() };
 		clientStates.set(root, state);
 	}
 	return state;
@@ -56,6 +57,9 @@ export async function continueUnfinishedSession(sessionID: string, settleTitle =
 	try {
 		const ralph = isRalphModeEnabled(getWorkspaceRoot());
 		if (ralph && state.ralphOutcomes.get(sessionID) === "user_stopped") return false;
+		// A user-initiated interrupt (Esc) suspends automatic continuation:
+		// only genuine user input re-enables it (see recordUserMessage).
+		if (state.interrupted.has(sessionID)) return false;
 		const effective = await effectiveTodosWithOwner(sessionID);
 		if (!effective || effective.ownerSessionID !== sessionID || !hasActiveTodo(effective.todos)) {
 			if (ralph && state.ralphOutcomes.has(sessionID)) state.ralphOutcomes.set(sessionID, "completed");
@@ -122,9 +126,23 @@ export function recordUserMessage(sessionID: string, messageID?: string): void {
 	if (messageID && state.lastUserMessageIDs.get(sessionID) === messageID) return;
 	if (messageID) state.lastUserMessageIDs.set(sessionID, messageID);
 	state.counts.delete(sessionID);
+	state.interrupted.delete(sessionID);
 	if (isRalphModeEnabled(getWorkspaceRoot()) && state.ralphOutcomes.has(sessionID)) {
 		if (state.ralphOutcomes.get(sessionID) === "user_stopped") state.ralphOutcomes.delete(sessionID);
 		else state.ralphOutcomes.set(sessionID, "user_stopped");
+	}
+}
+
+// Record a user-initiated interrupt (Esc): the session's run was aborted
+// from the user side, so automatic continuation must stop. Ralph runs are
+// marked user_stopped, mirroring genuine user input. A later genuine user
+// message re-enables continuation (recordUserMessage clears the flag).
+export function markInterrupted(sessionID: string): void {
+	const state = getState();
+	if (!state) return;
+	state.interrupted.add(sessionID);
+	if (isRalphModeEnabled(getWorkspaceRoot()) && state.ralphOutcomes.has(sessionID)) {
+		state.ralphOutcomes.set(sessionID, "user_stopped");
 	}
 }
 
@@ -145,4 +163,5 @@ export function clearContinuationState(sessionID: string): void {
 	state.generatedMessageIDs.delete(sessionID);
 	state.lastUserMessageIDs.delete(sessionID);
 	state.inFlight.delete(sessionID);
+	state.interrupted.delete(sessionID);
 }

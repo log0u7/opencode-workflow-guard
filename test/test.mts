@@ -3127,6 +3127,20 @@ await continuationPlugin.event?.({ event: { type: "message.updated", properties:
 await continuationPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-resume-cap" } } } as any);
 check("genuine user message resets continuation budget", continuationPrompts.filter((id) => id === "s-resume-cap").length === 4);
 
+console.log("- Policy 1: user interrupt stops automatic continuation -");
+todo("s-resume-abort", item("work the user stopped", "pending"));
+await continuationPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-resume-abort" } } } as any);
+await continuationPlugin.event?.({ event: { type: "session.error", properties: { sessionID: "s-resume-abort", error: { name: "MessageAbortedError", data: { message: "aborted by user" } } } } } as any);
+await continuationPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-resume-abort" } } } as any);
+check("user interrupt (Esc / MessageAbortedError) stops automatic continuation", continuationPrompts.filter((id) => id === "s-resume-abort").length === 1);
+await continuationPlugin.event?.({ event: { type: "message.updated", properties: { info: { id: "genuine-restart", role: "user", sessionID: "s-resume-abort" } } } } as any);
+await continuationPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-resume-abort" } } } as any);
+check("genuine user input after an interrupt re-enables automatic continuation", continuationPrompts.filter((id) => id === "s-resume-abort").length === 2);
+todo("s-resume-api-error", item("work behind a flaky provider", "pending"));
+await continuationPlugin.event?.({ event: { type: "session.error", properties: { sessionID: "s-resume-api-error", error: { name: "APIError", data: { message: "provider overloaded" } } } } } as any);
+await continuationPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-resume-api-error" } } } as any);
+check("non-abort session errors do not disable automatic continuation", continuationPrompts.filter((id) => id === "s-resume-api-error").length === 1);
+
 const ralphRoot = mkdtempSync(join(tmpdir(), "wg-ralph-"));
 mkdirSync(join(ralphRoot, ".opencode"));
 writeFileSync(join(ralphRoot, ".opencode", "workflow-guard.json"), JSON.stringify({ ralphMode: true, ralphMaxIterations: 2 }));
@@ -3165,6 +3179,11 @@ check("duplicate genuine user events leave an active ralph run stopped", ralphPr
 await ralphPlugin.event?.({ event: { type: "message.updated", properties: { info: { id: "human-restart", role: "user", sessionID: "s-ralph-stop" } } } } as any);
 await ralphPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-ralph-stop" } } } as any);
 check("distinct later user input can establish a fresh ralph run", ralphPrompts.filter((id) => id === "s-ralph-stop").length === 2 && runWithRuntimeState(ralphRoot, ralphClient as any, () => getRalphOutcome("s-ralph-stop")) === "running");
+todo("s-ralph-abort", item("ralph work the user stopped", "pending"));
+await ralphPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-ralph-abort" } } } as any);
+await ralphPlugin.event?.({ event: { type: "session.error", properties: { sessionID: "s-ralph-abort", error: { name: "MessageAbortedError", data: { message: "aborted by user" } } } } } as any);
+await ralphPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-ralph-abort" } } } as any);
+check("user interrupt stops an active ralph run as user_stopped", ralphPrompts.filter((id) => id === "s-ralph-abort").length === 1 && runWithRuntimeState(ralphRoot, ralphClient as any, () => getRalphOutcome("s-ralph-abort")) === "user_stopped");
 todo("s-ralph-complete", item("completable work", "pending"));
 await ralphPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-ralph-complete" } } } as any);
 todo("s-ralph-complete", item("completable work", "completed"));
