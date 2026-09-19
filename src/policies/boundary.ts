@@ -7,7 +7,7 @@ import {
 	getWorkspaceRootReal,
 	recordMutation,
 } from "../lib/state.ts";
-import { shellWords, unwrapShellCommand } from "../lib/shell.ts";
+import { prepareRedirectResidue, shellWords, unwrapShellCommand } from "../lib/shell.ts";
 import { isCollaborationInvocation, isProtectedPath, PROTECTED_PATH_REASON } from "./tamper.ts";
 import { isSecretPath, secretIn } from "./secrets.ts";
 import { onProtectedBranch, branchGuardReason } from "./git.ts";
@@ -129,8 +129,12 @@ export function teeTargetsIn(segment: string): string[] {
 
 function redirectMutationsIn(segment: string): ShellMutation[] {
 	const mutations: ShellMutation[] = [];
+	// Redirect detection runs on the quote-stripped residue: quoted data
+	// spans are command data and their ">" characters are not redirects,
+	// while redirect targets keep their value whether quoted or not.
+	const residue = prepareRedirectResidue(segment);
 	const redirectRe = /(?:^|[\s>]|(?<=[^\s"']))([0-9]*&?>>?&?)\s*["']?([^\s>&|;"']+)/g;
-	for (const redirectMatch of segment.matchAll(redirectRe)) {
+	for (const redirectMatch of residue.matchAll(redirectRe)) {
 		if (!redirectMatch[1] || !redirectMatch[2]) continue;
 		const op = redirectMatch[1];
 		const target = redirectMatch[2];

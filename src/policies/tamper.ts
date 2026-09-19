@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { basename, relative, resolve } from "node:path";
 import { getWorkspaceRoot } from "../lib/state.ts";
-import { decodeShellEscapes } from "../lib/shell.ts";
+import { decodeShellEscapes, prepareRedirectResidue } from "../lib/shell.ts";
 
 export const PROTECTED_PATH_REASON =
 	"Blocked: modifying Open" +
@@ -49,7 +49,7 @@ export function isCollaborationInvocation(segment: string): boolean {
 
 export function isSettingsTamper(command: string): boolean {
 	const segments = command.split(/[\n|;&]+/).map((s) =>
-		normalizeGlobPathEvasion(normalizeShellEvasion(s)),
+		normalizeGlobPathEvasion(normalizeShellEvasion(prepareRedirectResidue(s))),
 	);
 	return segments.some((segment) =>
 		!isCollaborationInvocation(segment) &&
