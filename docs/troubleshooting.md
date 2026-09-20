@@ -15,8 +15,8 @@ Common issues, root causes, and solutions when using `opencode-workflow-guard`.
 ### 2. Edits Blocked: `Blocked: no active todo item`
 
 - **Symptoms:** The agent attempts an edit (`edit`, `write`, `apply_patch`) and receives a block message directing it to create a task list.
-- **Root Cause:** Policy 1 blocks file-editing tools until the session's native todo list (`GET /session/:id/todo`) contains at least one task with status `pending` or `in_progress`.
-- **Solution:** The agent must call `todowrite` first. Once all tasks are marked `completed` or `cancelled`, edits will block again until a new breakdown is created for subsequent work.
+- **Root Cause:** Policy 1 blocks file-editing tools while the session's **effective** todo list is known and contains no task with status `pending` or `in_progress`. On OpenCode 1.x that list is the native todo state (`GET /session/:id/todo`). On OpenCode 2.x there is no todo endpoint and no builtin `todowrite`, so the list is reconstructed from the newest applied `todowrite` tool call in the session history (some ACP agents supply that tool). A list is only treated as empty when a `todowrite` part actually exists; when the session has no `todowrite` capability at all, the gate fails open rather than blocking every edit forever.
+- **Solution:** The agent must call `todowrite` first. Once all tasks are marked `completed` or `cancelled`, edits will block again until a new breakdown is created for subsequent work. If an agent on OpenCode 2.x is blocked here despite having no todo tool available, that is a bug - report it rather than working around it through shell writes.
 
 ---
 

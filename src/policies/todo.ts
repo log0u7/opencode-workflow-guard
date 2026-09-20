@@ -62,13 +62,23 @@ export async function effectiveTodosWithOwner(
 	if (!sessionID) return undefined;
 	const seen = new Set<string>();
 	let current: string | undefined = sessionID;
+	let sawUnknown = false;
 	while (current && !seen.has(current)) {
 		seen.add(current);
 		const todos = await fetchSessionTodos(current);
-		if (todos === undefined) return undefined;
-		if (todos.length > 0) return { todos, ownerSessionID: current };
+		if (todos === undefined) {
+			// This link has no determinable list (no todo capability, read
+			// error, or no endpoint). Do not treat it as empty and do not stop
+			// the walk: a parent may still own an applicable list, and keeping
+			// the walk going preserves evidence attribution to that owner. An
+			// unknown link only fails open if no ancestor provides a list.
+			sawUnknown = true;
+		} else if (todos.length > 0) {
+			return { todos, ownerSessionID: current };
+		}
 		current = await fetchParentSessionID(current);
 	}
+	if (sawUnknown) return undefined;
 	return { todos: [] };
 }
 
