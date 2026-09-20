@@ -292,17 +292,46 @@ check("V2: unknown-only chain fails open", (await effectiveTodosWithOwner("v2-ch
 walkTodos.set("v2-child-empty", []);
 walkTodos.set("v2-parent-unknown", undefined);
 walkParents.set("v2-child-empty", "v2-parent-unknown");
-check("V2: empty child with unknown ancestor fails open (matches V1)", (await effectiveTodosWithOwner("v2-child-empty")) === undefined);
+check("V2: empty child with unknown ancestor fails open", (await effectiveTodosWithOwner("v2-child-empty")) === undefined);
+walkTodos.set("v2-cycle-a", undefined);
+walkTodos.set("v2-cycle-b", undefined);
+walkParents.set("v2-cycle-a", "v2-cycle-b");
+walkParents.set("v2-cycle-b", "v2-cycle-a");
+check("V2: cycle of unknown links terminates and fails open", (await effectiveTodosWithOwner("v2-cycle-a")) === undefined);
 walkTodos.set("v2-child-all-empty", []);
 walkTodos.set("v2-parent-all-empty", []);
 walkParents.set("v2-child-all-empty", "v2-parent-all-empty");
 walkParents.set("v2-parent-all-empty", undefined);
 const allEmpty = await effectiveTodosWithOwner("v2-child-all-empty");
 check("V2: all-empty chain stays definitively empty (enforce)", Array.isArray(allEmpty?.todos) && allEmpty!.todos.length === 0);
-setSdkClient({ session: { todo: async () => ({ data: undefined }), get: async () => ({ data: {} }) } });
+// Seam: the V2 adapter delegates to scanSessionTodos, so drive that exact path
+// into the edit gate. A builtin-only session (history with no todowrite part)
+// must allow edits; a session whose newest todowrite emptied the list is still
+// gated.
+const scanCtx = (messages: unknown) => ({ session: { context: async () => messages } });
+setSdkClient({
+	session: {
+		todo: async ({ path }: { path: { id: string } }) => ({
+			data: await scanSessionTodos(scanCtx([{ content: [{ type: "tool", tool: "edit", state: { status: "completed" } }] }]), path.id),
+		}),
+		get: async () => ({ data: {} }),
+	},
+});
 check(
-	"V2 builtin-only session (no todo capability) allows edits",
+	"V2 builtin-only session (scanner reports unknown) allows edits",
 	!(await call("edit", { filePath: join(root, "a.ts"), content: "x" }, { sessionID: "s-v2-builtin" })),
+);
+setSdkClient({
+	session: {
+		todo: async ({ path }: { path: { id: string } }) => ({
+			data: await scanSessionTodos(scanCtx([todoPart([])]), path.id),
+		}),
+		get: async () => ({ data: {} }),
+	},
+});
+check(
+	"V2 session whose todowrite emptied the list is still gated",
+	blocked(await call("edit", { filePath: join(root, "a.ts"), content: "x" }, { sessionID: "s-v2-emptied" })),
 );
 setSdkClient(fakeClient);
 

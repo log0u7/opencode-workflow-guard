@@ -73,10 +73,9 @@ export async function effectiveTodosWithOwner(
 			// the walk going preserves evidence attribution to that owner. An
 			// unknown link only fails open if no ancestor provides a list.
 			sawUnknown = true;
-			current = await fetchParentSessionID(current);
-			continue;
+		} else if (todos.length > 0) {
+			return { todos, ownerSessionID: current };
 		}
-		if (todos.length > 0) return { todos, ownerSessionID: current };
 		current = await fetchParentSessionID(current);
 	}
 	if (sawUnknown) return undefined;
