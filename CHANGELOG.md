@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.13.3
+
+### Patch Changes
+
+- cd2448e: Fix a V2 todo-gate deadlock: OpenCode V2 has no builtin `todowrite` tool, so sessions driven by builtin tools could never satisfy the Policy 1 active-todo gate and every `edit`/`write` was blocked forever. Todo reconstruction now distinguishes "no todo capability" (history contains no `todowrite` part → unknown → the gate is skipped) from "definitively empty" (a `todowrite` part exists and reports no active tasks → still enforced). The parent-chain walk continues past unknown links and fails open only when no ancestor supplies a list, so a subagent still attributes mutations to a parent that owns the todo list. Fixes #148.
+
+## 1.13.2
+
+### Patch Changes
+
+- dd4ce6d: Fix V2 runtime compatibility: register the TUI companion's keymap layer from an app-slot render instead of plugin setup (`ctx.keymap.layer` resolves only inside the TUI's provider render tree; setup crashed with "Keymap.Provider is missing" on opencode v2.0.10), read the V2 `tool` field (with `name` fallback) when reconstructing todos and tool outcomes from message parts, and stop treating numeric SQL/awk comparison operands (`WHERE count > 5`, `n >= 10`) as shell file redirects.
+
+    Backwards compatible: the OpenCode 1.x server and TUI entrypoints are byte-identical, no config schema changes, and the dual default export is retained (patch bump). The only semantic change is the redirect relaxation above; real redirects (`> src/a.ts`, `>>`, fd forms, `/dev/null`) are unchanged.
+
+- Documentation: `docs/installation.md` now shows the OpenCode 2 targets (`opencode plugin add`, native `plugins` key, TUI companion in global `cli.json`) alongside the OpenCode 1.x forms, and the companion permission example covers both the V2 `permissions` array and the V1 `permission` map.
+
+## 1.13.1
+
+### Patch Changes
+
+- b003082: User-initiated interrupts (Esc) no longer trigger automatic continuation: the guard marks the session interrupted on MessageAbortedError (session.error or the aborted assistant message) and resumes its no-silent-early-exit behavior only after genuine user input, mirroring the ralph user_stopped semantics.
+- 75847e4: Settings-tamper scan no longer blocks collaboration commands (`gh`/`glab` issue|pr, `az repos pr`) or document content mentioning guarded paths; the redirect heuristic is shell-only.
+- dd01be6: Verification timeout is configurable: set `verifyTimeoutMs` in the project config or `WORKFLOW_GUARD_VERIFY_TIMEOUT_MS` in the environment (env wins) to raise the 30-second default for suites that legitimately exceed it.
+
+## 1.13.0
+
+### Minor Changes
+
+- a5bd462: Add OpenCode V2 support through the `@opencode/plugin` API. The package now ships both entrypoints from one default export: OpenCode 1.x keeps loading `server()`, and OpenCode 2.x loads `setup(ctx)`, which registers the same policies through V2 domains (`ctx.tool.hook`/`transform`, `ctx.session.hook`, `ctx.permission.hook`, `ctx.shell.hook`, and `ctx.event.subscribe`). The TUI companion gains a V2 CLI-plugin implementation (`ctx.keymap.layer`, `ctx.ui.slot`) alongside the V1 `tui()` export.
+
+    V2 notes:
+    - V2 has no todo endpoint, so the current todo list is reconstructed from the newest `todowrite` tool call in the session message history; enforcement semantics are unchanged.
+    - Builtin tool description enrichment (todowrite/edit/subagent notes) is best-effort under V2: builtin tools are not visible to the plugin tool editor during setup, so the notes may not appear until a later registration phase.
+    - V1's `command.executed` audit event has no V2 stream counterpart and is dropped (observability-only); permission journaling uses the V2 `permission.asked`/`permission.replied` events.
+
+### Patch Changes
+
+- f7464db: Allow tag publish flows: `git tag <name>` creation no longer counts as a protected-branch mutation, and tag push refspecs (`git push origin v1.2.0`, `git push origin refs/tags/v1.2.0`) are exempt from the protected-branch and merged-branch push rules. Tag deletions (`git tag -d`, `git push origin :refs/tags/v1.2.0`, `--delete`) remain blocked. Fixes #134.
+- 6c8cac7: Tamper guard exempts plan files: writes under `.opencode/plans/` are allowed (plan markdown is not configuration).
+
 ## 1.12.1
 
 ### Patch Changes

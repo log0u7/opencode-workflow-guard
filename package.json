@@ -1,6 +1,6 @@
 {
   "name": "opencode-workflow-guard",
-  "version": "1.12.1",
+  "version": "1.13.3",
   "description": "Deterministic workflow and safety policy enforcement for OpenCode",
   "license": "MIT",
   "type": "module",
@@ -48,8 +48,10 @@
   },
   "dependencies": {
     "@opencode-ai/plugin": "latest",
+    "@opencode/plugin": "latest",
     "@opentui/solid": "latest",
-    "jsonc-parser": "latest"
+    "jsonc-parser": "latest",
+    "@opencode/ai": "latest"
   },
   "devDependencies": {
     "@changesets/cli": "latest",

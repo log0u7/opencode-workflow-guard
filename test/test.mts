@@ -14,6 +14,7 @@ import {
 	WorkflowGuard,
 	buildCompactionContext,
 	detectVerifyCommand,
+	resolveVerifyTimeoutMs,
 	runVerify,
 	getCleanEnv,
 	resetVerifyState,
@@ -114,6 +115,8 @@ import { isProjectMemoryFreshAsync } from "../src/lib/project-memory.ts";
 import { ToolOutcomeTracker } from "../src/lib/tool-outcomes.ts";
 import { createRecoveryCheckpoint, finalizeRecoveryCheckpoint, listRecoveryCheckpoints, restoreRecoveryCheckpoint, setCheckpointGitForTesting } from "../src/lib/checkpoint.ts";
 import { WorkflowGuardTui, formatBadge, readProjectOption, readRecoveryCheckpointsOption, writeRecoveryCheckpointsOption } from "../src/workflow-guard-ui.ts";
+import { scanSessionTodos, toolPartName } from "../src/lib/v2-todo.ts";
+import { effectiveTodosWithOwner } from "../src/policies/todo.ts";
 
 let pass = 0;
 let fail = 0;
@@ -241,6 +244,95 @@ check("fetch failure fails open", !(await call("edit", { filePath: join(root, "a
 setSdkClient(undefined);
 check("missing client fails open", !(await call("edit", { filePath: join(root, "a.ts"), content: "x" }, { sessionID: "s-active" })));
 check("missing sessionID fails open", !(await call("edit", { filePath: join(root, "a.ts"), content: "x" })));
+setSdkClient(fakeClient);
+
+console.log("- Policy 1: V2 todo reconstruction (no todo capability vs empty list) -");
+const todoPart = (todos: unknown, status = "completed") => ({
+	content: [{ type: "tool", tool: "todowrite", state: { status, input: { todos } } }],
+});
+const ctxWith = (messages: unknown) => ({ session: { context: async () => messages } });
+
+check(
+	"V2: history with no todowrite part reports unknown (no todo capability)",
+	(await scanSessionTodos(ctxWith([{ content: [{ type: "tool", tool: "edit", state: { status: "completed" } }] }]), "s-v2")) === undefined,
+);
+const scanned = await scanSessionTodos(ctxWith([todoPart([item("a", "pending")])]), "s-v2");
+check("V2: completed todowrite defines the list", Array.isArray(scanned) && scanned.length === 1 && scanned[0]!.content === "a");
+const newest = await scanSessionTodos(ctxWith([todoPart([item("old")]), todoPart([item("new", "in_progress")])]), "s-v2");
+check("V2: newest applied todowrite wins", Array.isArray(newest) && newest[0]!.content === "new");
+const emptied = await scanSessionTodos(ctxWith([todoPart([])]), "s-v2");
+check("V2: emptied todowrite reports a definitive empty list", Array.isArray(emptied) && emptied.length === 0);
+check("V2: read rejection reports unknown", (await scanSessionTodos({ session: { context: async () => { throw new Error("boom"); } } }, "s-v2")) === undefined);
+const legacy = await scanSessionTodos(ctxWith([{ content: [{ type: "tool", name: "todowrite", state: { status: "completed", input: { todos: [item("legacy")] } } }] }]), "s-v2");
+check("V2: legacy name field is still accepted", Array.isArray(legacy) && legacy[0]!.content === "legacy");
+const inFlight = await scanSessionTodos(ctxWith([todoPart([item("x")], "pending")]), "s-v2");
+check("V2: in-flight todowrite reports an empty list, not unknown", Array.isArray(inFlight) && inFlight.length === 0);
+check("V2: toolPartName prefers tool and falls back to name", toolPartName({ tool: "shell" }) === "shell" && toolPartName({ name: "bash" }) === "bash" && toolPartName({}) === undefined);
+
+console.log("- Policy 1: parent-chain walk tolerates unknown links (V2) -");
+const walkTodos = new Map<string, TestTodo[] | undefined>();
+const walkParents = new Map<string, string | undefined>();
+setSdkClient({
+	session: {
+		todo: async ({ path }: { path: { id: string } }) => ({ data: walkTodos.get(path.id) }),
+		get: async ({ path }: { path: { id: string } }) => ({ data: { id: path.id, parentID: walkParents.get(path.id) } }),
+	},
+});
+walkTodos.set("v2-child-inherit", undefined);
+walkTodos.set("v2-parent-owner", [item("parent-task", "pending")]);
+walkParents.set("v2-child-inherit", "v2-parent-owner");
+const inherited = await effectiveTodosWithOwner("v2-child-inherit");
+check(
+	"V2: unknown child inherits a parent-owned list (owner attribution preserved)",
+	inherited?.ownerSessionID === "v2-parent-owner" && inherited?.todos[0]?.content === "parent-task",
+);
+walkTodos.set("v2-child-unknown", undefined);
+walkParents.set("v2-child-unknown", undefined);
+check("V2: unknown-only chain fails open", (await effectiveTodosWithOwner("v2-child-unknown")) === undefined);
+walkTodos.set("v2-child-empty", []);
+walkTodos.set("v2-parent-unknown", undefined);
+walkParents.set("v2-child-empty", "v2-parent-unknown");
+check("V2: empty child with unknown ancestor fails open", (await effectiveTodosWithOwner("v2-child-empty")) === undefined);
+walkTodos.set("v2-cycle-a", undefined);
+walkTodos.set("v2-cycle-b", undefined);
+walkParents.set("v2-cycle-a", "v2-cycle-b");
+walkParents.set("v2-cycle-b", "v2-cycle-a");
+check("V2: cycle of unknown links terminates and fails open", (await effectiveTodosWithOwner("v2-cycle-a")) === undefined);
+walkTodos.set("v2-child-all-empty", []);
+walkTodos.set("v2-parent-all-empty", []);
+walkParents.set("v2-child-all-empty", "v2-parent-all-empty");
+walkParents.set("v2-parent-all-empty", undefined);
+const allEmpty = await effectiveTodosWithOwner("v2-child-all-empty");
+check("V2: all-empty chain stays definitively empty (enforce)", Array.isArray(allEmpty?.todos) && allEmpty!.todos.length === 0);
+// Seam: the V2 adapter delegates to scanSessionTodos, so drive that exact path
+// into the edit gate. A builtin-only session (history with no todowrite part)
+// must allow edits; a session whose newest todowrite emptied the list is still
+// gated.
+const scanCtx = (messages: unknown) => ({ session: { context: async () => messages } });
+setSdkClient({
+	session: {
+		todo: async ({ path }: { path: { id: string } }) => ({
+			data: await scanSessionTodos(scanCtx([{ content: [{ type: "tool", tool: "edit", state: { status: "completed" } }] }]), path.id),
+		}),
+		get: async () => ({ data: {} }),
+	},
+});
+check(
+	"V2 builtin-only session (scanner reports unknown) allows edits",
+	!(await call("edit", { filePath: join(root, "a.ts"), content: "x" }, { sessionID: "s-v2-builtin" })),
+);
+setSdkClient({
+	session: {
+		todo: async ({ path }: { path: { id: string } }) => ({
+			data: await scanSessionTodos(scanCtx([todoPart([])]), path.id),
+		}),
+		get: async () => ({ data: {} }),
+	},
+});
+check(
+	"V2 session whose todowrite emptied the list is still gated",
+	blocked(await call("edit", { filePath: join(root, "a.ts"), content: "x" }, { sessionID: "s-v2-emptied" })),
+);
 setSdkClient(fakeClient);
 
 console.log("- Policy 2: push to main/master -");
@@ -450,6 +542,8 @@ check("collaboration command with redirect outside workspace still blocked", blo
 check("allow command with guarded-path text in quoted data (not tamper)", !(await shell(`echo "flow: x > ${ocDir}" > notes.md`)));
 check("block unquoted redirect into .opencode", blocked(await shell(`echo x > .open${"code"}/y`)));
 check("block redirect with quoted real target", blocked(await shell(`echo x > ".open${"code"}/opencode.json"`)));
+check("block quoted command word running the CLI auth flow", blocked(await shell(`"open${"code"}" auth login`)));
+check("block eval of a quoted CLI auth payload", blocked(await shell(`eval 'open${"code"} auth login'`)));
 
 console.log("- Policy 6: tamper via edit tools (path protection) -");
 check("block edit of project opencode.json", blocked(await call("edit", { filePath: join(root, "opencode.json"), oldString: "a", newString: "b" }, { sessionID: "s-active" })));
@@ -539,6 +633,10 @@ check("inspection command with mutation keywords in grep argument is not blocked
 check("git log with mutation keywords in grep argument is not blocked", !(await call("bash", { command: 'git log --grep="rm old files"' }, { sessionID: "s-empty" })));
 check("grep searching for mutation command name is not blocked", !(await call("bash", { command: 'grep -rn "mkdir" src/' }, { sessionID: "s-empty" })));
 check("stderr redirect to /dev/null is not a file mutation", !(await call("bash", { command: "ls missing 2>/dev/null" }, { sessionID: "s-empty" })));
+check("SQL > comparison in query is not a file mutation", !(await call("bash", { command: 'sqlite3 app.db "SELECT id FROM events WHERE count > 5"' }, { sessionID: "s-empty" })));
+check("SQL >= comparison in query is not a file mutation", !(await call("bash", { command: 'psql -c "SELECT 1 FROM metrics WHERE n >= 10"' }, { sessionID: "s-empty" })));
+check("numeric comparison in grep pattern is not a file mutation", !(await call("bash", { command: "grep -E 'latency > 200' src/log.ts" }, { sessionID: "s-empty" })));
+check("real redirect alongside numeric comparison still blocked", blocked(await call("bash", { command: 'echo "x > 5" > src/a.ts' }, { sessionID: "s-empty" })));
 check("touch outside workspace is blocked", blocked(await call("bash", { command: "touch /tmp/wg-outside-touch" }, { sessionID: "s-active" })));
 check("mkdir outside workspace is blocked", blocked(await call("bash", { command: "mkdir /tmp/wg-outside-dir" }, { sessionID: "s-active" })));
 check("single-file rm outside workspace is blocked", blocked(await call("bash", { command: "rm /tmp/wg-outside-file" }, { sessionID: "s-active" })));
@@ -1382,6 +1480,24 @@ rmSync(pipelineTimeoutMarker, { force: true });
 await runVerify(`node -e "setTimeout(() => require('fs').writeFileSync('${pipelineTimeoutMarker}', 'orphan'), 300)" | cat`, root, 50);
 await new Promise((resolve) => setTimeout(resolve, 450));
 check("runVerify timeout terminates descendants behind shell pipelines", !existsSync(pipelineTimeoutMarker));
+
+console.log("- Policy 10: verification timeout resolution -");
+const previousVerifyTimeoutEnv = process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS;
+if (previousVerifyTimeoutEnv !== undefined) delete process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS;
+check("verification timeout resolution defaults to 30s", resolveVerifyTimeoutMs(root) === 30_000);
+const verifyTimeoutConfigRoot = mkdtempSync(join(tmpdir(), "wg-verify-timeout-"));
+mkdirSync(join(verifyTimeoutConfigRoot, ".opencode"));
+writeFileSync(join(verifyTimeoutConfigRoot, ".opencode", "workflow-guard.json"), JSON.stringify({ verifyTimeoutMs: 60000 }));
+reloadProjectConfig(verifyTimeoutConfigRoot);
+check("verification timeout honors project config", resolveVerifyTimeoutMs(verifyTimeoutConfigRoot) === 60_000);
+writeFileSync(join(verifyTimeoutConfigRoot, ".opencode", "workflow-guard.json"), JSON.stringify({ verifyTimeoutMs: -5 }));
+reloadProjectConfig(verifyTimeoutConfigRoot);
+check("verification timeout ignores invalid project config values", resolveVerifyTimeoutMs(verifyTimeoutConfigRoot) === 30_000);
+process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS = "120000";
+check("verification timeout env overrides a valid project config", resolveVerifyTimeoutMs(verifyTimeoutConfigRoot) === 120_000);
+delete process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS;
+if (previousVerifyTimeoutEnv !== undefined) process.env.WORKFLOW_GUARD_VERIFY_TIMEOUT_MS = previousVerifyTimeoutEnv;
+rmSync(verifyTimeoutConfigRoot, { recursive: true, force: true });
 let windowsCleanupFinished = false;
 const windowsCleanup = terminateProcessTree(1234, () => {}, "win32", async (pid) => {
 	check("Windows timeout cleanup receives the child pid", pid === 1234);
@@ -3111,6 +3227,20 @@ await continuationPlugin.event?.({ event: { type: "message.updated", properties:
 await continuationPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-resume-cap" } } } as any);
 check("genuine user message resets continuation budget", continuationPrompts.filter((id) => id === "s-resume-cap").length === 4);
 
+console.log("- Policy 1: user interrupt stops automatic continuation -");
+todo("s-resume-abort", item("work the user stopped", "pending"));
+await continuationPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-resume-abort" } } } as any);
+await continuationPlugin.event?.({ event: { type: "session.error", properties: { sessionID: "s-resume-abort", error: { name: "MessageAbortedError", data: { message: "aborted by user" } } } } } as any);
+await continuationPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-resume-abort" } } } as any);
+check("user interrupt (Esc / MessageAbortedError) stops automatic continuation", continuationPrompts.filter((id) => id === "s-resume-abort").length === 1);
+await continuationPlugin.event?.({ event: { type: "message.updated", properties: { info: { id: "genuine-restart", role: "user", sessionID: "s-resume-abort" } } } } as any);
+await continuationPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-resume-abort" } } } as any);
+check("genuine user input after an interrupt re-enables automatic continuation", continuationPrompts.filter((id) => id === "s-resume-abort").length === 2);
+todo("s-resume-api-error", item("work behind a flaky provider", "pending"));
+await continuationPlugin.event?.({ event: { type: "session.error", properties: { sessionID: "s-resume-api-error", error: { name: "APIError", data: { message: "provider overloaded" } } } } } as any);
+await continuationPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-resume-api-error" } } } as any);
+check("non-abort session errors do not disable automatic continuation", continuationPrompts.filter((id) => id === "s-resume-api-error").length === 1);
+
 const ralphRoot = mkdtempSync(join(tmpdir(), "wg-ralph-"));
 mkdirSync(join(ralphRoot, ".opencode"));
 writeFileSync(join(ralphRoot, ".opencode", "workflow-guard.json"), JSON.stringify({ ralphMode: true, ralphMaxIterations: 2 }));
@@ -3149,6 +3279,11 @@ check("duplicate genuine user events leave an active ralph run stopped", ralphPr
 await ralphPlugin.event?.({ event: { type: "message.updated", properties: { info: { id: "human-restart", role: "user", sessionID: "s-ralph-stop" } } } } as any);
 await ralphPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-ralph-stop" } } } as any);
 check("distinct later user input can establish a fresh ralph run", ralphPrompts.filter((id) => id === "s-ralph-stop").length === 2 && runWithRuntimeState(ralphRoot, ralphClient as any, () => getRalphOutcome("s-ralph-stop")) === "running");
+todo("s-ralph-abort", item("ralph work the user stopped", "pending"));
+await ralphPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-ralph-abort" } } } as any);
+await ralphPlugin.event?.({ event: { type: "session.error", properties: { sessionID: "s-ralph-abort", error: { name: "MessageAbortedError", data: { message: "aborted by user" } } } } } as any);
+await ralphPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-ralph-abort" } } } as any);
+check("user interrupt stops an active ralph run as user_stopped", ralphPrompts.filter((id) => id === "s-ralph-abort").length === 1 && runWithRuntimeState(ralphRoot, ralphClient as any, () => getRalphOutcome("s-ralph-abort")) === "user_stopped");
 todo("s-ralph-complete", item("completable work", "pending"));
 await ralphPlugin.event?.({ event: { type: "session.idle", properties: { sessionID: "s-ralph-complete" } } } as any);
 todo("s-ralph-complete", item("completable work", "completed"));

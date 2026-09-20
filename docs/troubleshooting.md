@@ -15,8 +15,8 @@ Common issues, root causes, and solutions when using `opencode-workflow-guard`.
 ### 2. Edits Blocked: `Blocked: no active todo item`
 
 - **Symptoms:** The agent attempts an edit (`edit`, `write`, `apply_patch`) and receives a block message directing it to create a task list.
-- **Root Cause:** Policy 1 blocks file-editing tools until the session's native todo list (`GET /session/:id/todo`) contains at least one task with status `pending` or `in_progress`.
-- **Solution:** The agent must call `todowrite` first. Once all tasks are marked `completed` or `cancelled`, edits will block again until a new breakdown is created for subsequent work.
+- **Root Cause:** Policy 1 blocks file-editing tools while the session's **effective** todo list is known and contains no task with status `pending` or `in_progress`. On OpenCode 1.x that list is the native todo state (`GET /session/:id/todo`). On OpenCode 2.x there is no todo endpoint and no builtin `todowrite`, so the list is reconstructed from the newest applied `todowrite` tool call in the session history (some ACP agents supply that tool). A list is only treated as empty when a `todowrite` part actually exists; when the session has no `todowrite` capability at all, the gate fails open rather than blocking every edit forever.
+- **Solution:** The agent must call `todowrite` first. Once all tasks are marked `completed` or `cancelled`, edits will block again until a new breakdown is created for subsequent work. If an agent on OpenCode 2.x is blocked here despite having no todo tool available, that is a bug - report it rather than working around it through shell writes.
 
 ---
 
@@ -82,3 +82,21 @@ opencode plugin "opencode-workflow-guard@$VERSION" --global --force
 OpenCode documents `opencode plugin <module>` as installing a plugin and updating its config, with `--global` for global config and `--force` to replace an existing plugin version: https://opencode.ai/docs/cli/#plugin. Its plugin documentation also describes npm plugins as OpenCode-managed, cached installations: https://opencode.ai/docs/plugins/#how-plugins-are-installed.
 
 After the command reports `Detected server + tui targets`, confirm it reports replacements/additions for both the OpenCode and TUI config files, then restart OpenCode. Manual cache deletion should not be necessary.
+
+---
+
+### 10. TUI companion crashes with `Keymap.Provider is missing` (OpenCode V2)
+
+- **Symptoms:** On opencode v2, the TUI companion plugin fails during setup with `Keymap.Provider is missing` and does not load.
+- **Root Cause:** `ctx.keymap.layer` resolves a Solid context (`useContext(KeymapContext)`) and only works inside the TUI's `Keymap.Provider` render tree; the API documents layers as "owned by the calling component". Plugin `setup()` runs as a plain async call outside that tree, so registering a layer there always throws.
+- **Solution:** Fixed in 1.13.2: the layer is registered from an `app`-slot claim (`ctx.ui.slot({ append: "app", render: () => { ...; return null } })`). Slot renders execute in a reactive scope under the provider, and the same session-panel pattern applies to any plugin API that requires component ownership. If you maintain a TUI plugin that registers keymap layers, commands, or reactive state, register them from a slot render (or a rendered component), never from `setup()`.
+
+---
+
+### 11. Reading tool parts from V2 sessions (integrators)
+
+- **Symptoms:** Code that parses recorded tool calls (message parts, the `part` DB table, or `session.message.content.updated` events) finds no tool name on OpenCode V2, or sees tool names that do not exist in OpenCode's builtin tool list.
+- **Root Cause:** Two independent things:
+  1. V2 message parts record the tool name in the `tool` field; V1 used `name`. Code reading `part.name` silently gets `undefined` on V2.
+  2. V2's builtin tool registry contains only `read`, `glob`, `grep`, `edit`, `write`, `patch`, `shell`, `webfetch`, `websearch`, `question`, `skill`, `subagent`, and `execute`. There is no builtin `todowrite` (the V1 name), and the V1 `task` subagent tool was renamed to `subagent`. `todowrite`/`bash` tool parts observed in V2 sessions come from ACP agents (for example pi) that supply their own tools; those tools are not in the server-side registry and cannot be reached by `ctx.tool.transform`.
+- **Solution:** Read the tool name as `part.tool ?? part.name` and treat tool-part names as agent-reported, not as the builtin registry. `ToolEditor.update` ignores missing IDs, so enriching a tool that does not exist is a harmless no-op.

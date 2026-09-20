@@ -8,7 +8,9 @@
  * from ./lib/, and re-exports the public helper surface for tests.
  */
 
-import { type Plugin, type PluginModule } from "@opencode-ai/plugin";
+import { type Plugin as V1Plugin, type PluginModule } from "@opencode-ai/plugin";
+import { Plugin } from "@opencode/plugin";
+import { WorkflowGuardV2 } from "./lib/v2-plugin.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { join } from "node:path";
@@ -188,6 +190,7 @@ export function managedConfigDiagnostic(platform = process.platform, env: NodeJS
 // ── Verification engine ──────────────────────────────────────────────────────
 import {
 	detectVerifyCommand,
+	resolveVerifyTimeoutMs,
 	runVerify,
 	snipVerifyOutput,
 	getCurrentGitCommitHash,
@@ -197,6 +200,7 @@ import {
 
 export {
 	detectVerifyCommand,
+	resolveVerifyTimeoutMs,
 	runVerify,
 	snipVerifyOutput,
 	getCurrentGitCommitHash,
@@ -239,6 +243,7 @@ import {
 	clearContinuationState,
 	continueUnfinishedSession,
 	isGeneratedContinuationMessage,
+	markInterrupted,
 	recordUserMessage,
 } from "./policies/continuation.ts";
 import {
@@ -377,7 +382,7 @@ export function buildCompactionContext(operationalState: string, priorityBlocks:
 	return context;
 }
 
-export const WorkflowGuard: Plugin = async (ctx) => {
+export const WorkflowGuard: V1Plugin = async (ctx: Parameters<V1Plugin>[0]) => {
 	// Honor worktree if present (e.g. opencode worktrees or devcontainers)
 	// so worktree plugins cannot punch through boundary gates. When the host
 	// reports the filesystem root, use the SDK's actual project worktree instead.
@@ -763,11 +768,23 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 				}
 			}
 			if (event?.type === "message.updated") {
-				const info = (event.properties as { info?: { id?: unknown; role?: unknown; sessionID?: unknown } })?.info;
+				const info = (event.properties as { info?: { id?: unknown; role?: unknown; sessionID?: unknown; error?: { name?: unknown } } })?.info;
 				if (info?.role === "user" && typeof info.sessionID === "string") {
 					await runWithRuntimeState(effectiveRoot, ctx.client, () => {
 						recordUserMessage(info.sessionID as string, typeof info.id === "string" ? info.id : undefined);
 					});
+				}
+				// A user-initiated interrupt (Esc) surfaces as an aborted
+				// assistant message: stop automatic continuation for the
+				// session until genuine user input arrives.
+				if (info?.role === "assistant" && typeof info.sessionID === "string" && info.error?.name === "MessageAbortedError") {
+					await runWithRuntimeState(effectiveRoot, ctx.client, () => markInterrupted(info.sessionID as string));
+				}
+			}
+			if (event?.type === "session.error") {
+				const props = event.properties as { sessionID?: unknown; error?: { name?: unknown } };
+				if (typeof props?.sessionID === "string" && props?.error?.name === "MessageAbortedError") {
+					await runWithRuntimeState(effectiveRoot, ctx.client, () => markInterrupted(props.sessionID as string));
 				}
 			}
 			if (event?.type === "session.deleted") {
@@ -804,8 +821,12 @@ export const WorkflowGuard: Plugin = async (ctx) => {
 	};
 };
 
-// Default export MUST be a V1 PluginModule record.
+// Default export supports BOTH generations: V1 calls server(), V2 reads id+setup().
+// Spread Plugin.define() so the V2 definition type-checks separately from server().
 export default {
-	id: "workflow-guard",
+	...Plugin.define({
+		id: "workflow-guard",
+		setup: WorkflowGuardV2,
+	}),
 	server: WorkflowGuard,
 } satisfies PluginModule;

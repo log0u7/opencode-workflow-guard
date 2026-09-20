@@ -27,6 +27,7 @@ export interface ProjectConfig {
 	profile?: "interactive" | "autonomous";
 	protectedBranches?: string[];
 	verifyCommand?: string;
+	verifyTimeoutMs?: number;
 	postEditValidators?: Array<{
 		pattern: string;
 		command: string;
