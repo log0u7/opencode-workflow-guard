@@ -318,7 +318,10 @@ export function secretSourceInFilesystemCommand(segment: string): string | undef
 // Remove single- and double-quoted spans from a shell segment. Used to
 // analyze the residue of collaboration invocations: quoted arguments are
 // command data and can never be shell redirects, while unquoted redirects
-// keep receiving full validation.
+// keep receiving full validation. NOTE: unlike shell.ts's
+// prepareRedirectResidue, this strips EVERY span including redirect
+// targets and glued concatenations - only use it for collaboration
+// segments where all quoted content is command data.
 function stripQuotedSpans(segment: string): string {
 	return segment.replace(/'[^'\n]*'/g, " ").replace(/"[^"\n]*"/g, " ");
 }
