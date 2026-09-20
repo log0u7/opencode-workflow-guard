@@ -19,7 +19,8 @@ import { Plugin } from "@opencode/plugin";
 import { Message } from "@opencode/ai";
 import { z } from "zod";
 import { join, resolve } from "node:path";
-import type { TodoItem, TodoSdkClient } from "./types.ts";
+import type { TodoSdkClient } from "./types.ts";
+import { scanSessionTodos, toolPartName } from "./v2-todo.ts";
 import { findGitRoot, reloadProjectConfig } from "./project-config.ts";
 import {
 	setWorkspaceRoot,
@@ -66,44 +67,9 @@ type V2Context = Plugin.Context;
 
 // ── V1 SDK client adapter ─────────────────────────────────────────────────────
 
-/**
- * V2 tool parts carry the tool name in `tool` (the V1 field was `name`); ACP
- * agents may still report either shape, so accept both.
- */
-function toolPartName(part: { tool?: unknown; name?: unknown }): string | undefined {
-	if (typeof part.tool === "string") return part.tool;
-	if (typeof part.name === "string") return part.name;
-	return undefined;
-}
-
-/**
- * Reconstruct the current todo list for a session from the session message
- * history (V2 exposes no dedicated todo endpoint). The newest applied
- * `todowrite` tool call's input is the current state.
- */
-async function fetchTodosFromContext(ctx: V2Context, sessionID: string): Promise<TodoItem[] | undefined> {
-	try {
-		const messages = (await ctx.session.context({ sessionID })) as unknown as Array<{ content?: unknown }>;
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const content = (messages[i] as { content?: unknown })?.content;
-			if (!Array.isArray(content)) continue;
-			for (let j = content.length - 1; j >= 0; j--) {
-				const part = content[j] as { type?: string; tool?: unknown; name?: unknown; state?: { status?: string; input?: { todos?: unknown } } };
-				if (part?.type !== "tool") continue;
-				const toolName = toolPartName(part);
-				if (toolName === undefined) continue;
-				if (!/^todowrite$/i.test(toolName)) continue;
-				const status = part.state?.status;
-				if (status === "pending" || status === "streaming" || status === "running") continue;
-				const todos = part.state?.input?.todos;
-				if (Array.isArray(todos)) return todos as TodoItem[];
-			}
-		}
-		return [];
-	} catch {
-		return undefined;
-	}
-}
+// V2 has no todo endpoint; `scanSessionTodos` reconstructs one session's list
+// from message history and distinguishes "empty" from "unknown" (no todo
+// capability) so builtin-only sessions are not gated forever. See v2-todo.ts.
 
 function createV2SdkClient(ctx: V2Context): TodoSdkClient {
 	// V2 has no server-side log API or TUI surface, so app.log degrades to
@@ -119,7 +85,7 @@ function createV2SdkClient(ctx: V2Context): TodoSdkClient {
 			},
 		},
 		session: {
-			todo: async ({ path }) => ({ data: await fetchTodosFromContext(ctx, path.id) }),
+			todo: async ({ path }) => ({ data: await scanSessionTodos(ctx, path.id) }),
 			get: async ({ path }) => {
 				const session = await ctx.session.get({ sessionID: path.id });
 				return { data: { parentID: (session as { parentID?: string }).parentID, title: (session as { title?: string }).title } };

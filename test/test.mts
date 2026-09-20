@@ -115,6 +115,8 @@ import { isProjectMemoryFreshAsync } from "../src/lib/project-memory.ts";
 import { ToolOutcomeTracker } from "../src/lib/tool-outcomes.ts";
 import { createRecoveryCheckpoint, finalizeRecoveryCheckpoint, listRecoveryCheckpoints, restoreRecoveryCheckpoint, setCheckpointGitForTesting } from "../src/lib/checkpoint.ts";
 import { WorkflowGuardTui, formatBadge, readProjectOption, readRecoveryCheckpointsOption, writeRecoveryCheckpointsOption } from "../src/workflow-guard-ui.ts";
+import { scanSessionTodos, toolPartName } from "../src/lib/v2-todo.ts";
+import { effectiveTodosWithOwner } from "../src/policies/todo.ts";
 
 let pass = 0;
 let fail = 0;
@@ -242,6 +244,66 @@ check("fetch failure fails open", !(await call("edit", { filePath: join(root, "a
 setSdkClient(undefined);
 check("missing client fails open", !(await call("edit", { filePath: join(root, "a.ts"), content: "x" }, { sessionID: "s-active" })));
 check("missing sessionID fails open", !(await call("edit", { filePath: join(root, "a.ts"), content: "x" })));
+setSdkClient(fakeClient);
+
+console.log("- Policy 1: V2 todo reconstruction (no todo capability vs empty list) -");
+const todoPart = (todos: unknown, status = "completed") => ({
+	content: [{ type: "tool", tool: "todowrite", state: { status, input: { todos } } }],
+});
+const ctxWith = (messages: unknown) => ({ session: { context: async () => messages } });
+
+check(
+	"V2: history with no todowrite part reports unknown (no todo capability)",
+	(await scanSessionTodos(ctxWith([{ content: [{ type: "tool", tool: "edit", state: { status: "completed" } }] }]), "s-v2")) === undefined,
+);
+const scanned = await scanSessionTodos(ctxWith([todoPart([item("a", "pending")])]), "s-v2");
+check("V2: completed todowrite defines the list", Array.isArray(scanned) && scanned.length === 1 && scanned[0]!.content === "a");
+const newest = await scanSessionTodos(ctxWith([todoPart([item("old")]), todoPart([item("new", "in_progress")])]), "s-v2");
+check("V2: newest applied todowrite wins", Array.isArray(newest) && newest[0]!.content === "new");
+const emptied = await scanSessionTodos(ctxWith([todoPart([])]), "s-v2");
+check("V2: emptied todowrite reports a definitive empty list", Array.isArray(emptied) && emptied.length === 0);
+check("V2: read rejection reports unknown", (await scanSessionTodos({ session: { context: async () => { throw new Error("boom"); } } }, "s-v2")) === undefined);
+const legacy = await scanSessionTodos(ctxWith([{ content: [{ type: "tool", name: "todowrite", state: { status: "completed", input: { todos: [item("legacy")] } } }] }]), "s-v2");
+check("V2: legacy name field is still accepted", Array.isArray(legacy) && legacy[0]!.content === "legacy");
+const inFlight = await scanSessionTodos(ctxWith([todoPart([item("x")], "pending")]), "s-v2");
+check("V2: in-flight todowrite reports an empty list, not unknown", Array.isArray(inFlight) && inFlight.length === 0);
+check("V2: toolPartName prefers tool and falls back to name", toolPartName({ tool: "shell" }) === "shell" && toolPartName({ name: "bash" }) === "bash" && toolPartName({}) === undefined);
+
+console.log("- Policy 1: parent-chain walk tolerates unknown links (V2) -");
+const walkTodos = new Map<string, TestTodo[] | undefined>();
+const walkParents = new Map<string, string | undefined>();
+setSdkClient({
+	session: {
+		todo: async ({ path }: { path: { id: string } }) => ({ data: walkTodos.get(path.id) }),
+		get: async ({ path }: { path: { id: string } }) => ({ data: { id: path.id, parentID: walkParents.get(path.id) } }),
+	},
+});
+walkTodos.set("v2-child-inherit", undefined);
+walkTodos.set("v2-parent-owner", [item("parent-task", "pending")]);
+walkParents.set("v2-child-inherit", "v2-parent-owner");
+const inherited = await effectiveTodosWithOwner("v2-child-inherit");
+check(
+	"V2: unknown child inherits a parent-owned list (owner attribution preserved)",
+	inherited?.ownerSessionID === "v2-parent-owner" && inherited?.todos[0]?.content === "parent-task",
+);
+walkTodos.set("v2-child-unknown", undefined);
+walkParents.set("v2-child-unknown", undefined);
+check("V2: unknown-only chain fails open", (await effectiveTodosWithOwner("v2-child-unknown")) === undefined);
+walkTodos.set("v2-child-empty", []);
+walkTodos.set("v2-parent-unknown", undefined);
+walkParents.set("v2-child-empty", "v2-parent-unknown");
+check("V2: empty child with unknown ancestor fails open (matches V1)", (await effectiveTodosWithOwner("v2-child-empty")) === undefined);
+walkTodos.set("v2-child-all-empty", []);
+walkTodos.set("v2-parent-all-empty", []);
+walkParents.set("v2-child-all-empty", "v2-parent-all-empty");
+walkParents.set("v2-parent-all-empty", undefined);
+const allEmpty = await effectiveTodosWithOwner("v2-child-all-empty");
+check("V2: all-empty chain stays definitively empty (enforce)", Array.isArray(allEmpty?.todos) && allEmpty!.todos.length === 0);
+setSdkClient({ session: { todo: async () => ({ data: undefined }), get: async () => ({ data: {} }) } });
+check(
+	"V2 builtin-only session (no todo capability) allows edits",
+	!(await call("edit", { filePath: join(root, "a.ts"), content: "x" }, { sessionID: "s-v2-builtin" })),
+);
 setSdkClient(fakeClient);
 
 console.log("- Policy 2: push to main/master -");
