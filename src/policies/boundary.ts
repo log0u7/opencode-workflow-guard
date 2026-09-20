@@ -129,14 +129,22 @@ export function teeTargetsIn(segment: string): string[] {
 
 function redirectMutationsIn(segment: string): ShellMutation[] {
 	const mutations: ShellMutation[] = [];
-	const redirectRe = /(?:^|[\s>]|(?<=[^\s"']))([0-9]*&?>>?&?)\s*["']?([^\s>&|;"']+)/g;
+	// The `(?!=)` lookahead after the op rejects comparison operators (`>=`,
+	// `==`) so they cannot match as a redirect op with `=` as its target.
+	const redirectRe = /(?:^|[\s>]|(?<=[^\s"']))([0-9]*&?>>?&?(?!=))\s*["']?([^\s>&|;"']+)/g;
 	for (const redirectMatch of segment.matchAll(redirectRe)) {
 		if (!redirectMatch[1] || !redirectMatch[2]) continue;
 		const op = redirectMatch[1];
 		const target = redirectMatch[2];
 		// Filter fd duplication (e.g. 2>&1, >&2) where target is purely an fd number
 		const isFdDup = op.endsWith("&") && /^\d+$/.test(target);
-		if (!isFdDup && !/^\/dev\/(?:null|stdout|stderr|tty|fd\/\d+)$/.test(target)) {
+		// Filter comparison operands from embedded non-shell syntax (SQL, awk,
+		// test expressions): `WHERE count > 5`, `x >= 10`. A bare `>` whose
+		// target is purely numeric is overwhelmingly a comparison operand, not
+		// a redirect into a numeric filename. `>>` and fd forms (`2>`) keep
+		// redirect semantics.
+		const isComparisonOperand = op === ">" && /^\d+$/.test(target);
+		if (!isFdDup && !isComparisonOperand && !/^\/dev\/(?:null|stdout|stderr|tty|fd\/\d+)$/.test(target)) {
 			mutations.push({
 				kind: "redirect",
 				target,
