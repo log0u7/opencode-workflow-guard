@@ -67,6 +67,16 @@ type V2Context = Plugin.Context;
 // ── V1 SDK client adapter ─────────────────────────────────────────────────────
 
 /**
+ * V2 tool parts carry the tool name in `tool` (the V1 field was `name`); ACP
+ * agents may still report either shape, so accept both.
+ */
+function toolPartName(part: { tool?: unknown; name?: unknown }): string | undefined {
+	if (typeof part.tool === "string") return part.tool;
+	if (typeof part.name === "string") return part.name;
+	return undefined;
+}
+
+/**
  * Reconstruct the current todo list for a session from the session message
  * history (V2 exposes no dedicated todo endpoint). The newest applied
  * `todowrite` tool call's input is the current state.
@@ -78,9 +88,11 @@ async function fetchTodosFromContext(ctx: V2Context, sessionID: string): Promise
 			const content = (messages[i] as { content?: unknown })?.content;
 			if (!Array.isArray(content)) continue;
 			for (let j = content.length - 1; j >= 0; j--) {
-				const part = content[j] as { type?: string; name?: string; state?: { status?: string; input?: { todos?: unknown } } };
-				if (part?.type !== "tool" || typeof part.name !== "string") continue;
-				if (!/^todowrite$/i.test(part.name)) continue;
+				const part = content[j] as { type?: string; tool?: unknown; name?: unknown; state?: { status?: string; input?: { todos?: unknown } } };
+				if (part?.type !== "tool") continue;
+				const toolName = toolPartName(part);
+				if (toolName === undefined) continue;
+				if (!/^todowrite$/i.test(toolName)) continue;
 				const status = part.state?.status;
 				if (status === "pending" || status === "streaming" || status === "running") continue;
 				const todos = part.state?.input?.todos;
@@ -137,6 +149,18 @@ const EDIT_SUFFIX =
 const SUBAGENT_SUFFIX =
 	"\n\nWorkflow Guard subagent guidance: When spawning parallel worker subagents, use guard_worktree_create to isolate file mutations in separate worktrees. When conducting code reviews before task completion or PR creation, fetch the rubric with guard_review_rubric and provide it to a reviewer subagent to evaluate and record via record_review.";
 
+// Builtin tool description enrichment. Candidates are matched against the
+// host's tool registry; `ToolEditor.update` ignores missing IDs, so extra
+// candidates are harmless no-ops.
+//
+// V2.0.10 builtin surface (docs + binary): read, glob, grep, edit, write,
+// patch, shell, webfetch, websearch, question, skill, subagent, execute.
+// - There is no builtin `todowrite` (the V1 name). Todowrite tool parts seen
+//   in V2 sessions come from ACP agents that supply their own tools; those
+//   are not in the server registry, so this enrichment cannot reach them.
+//   The candidate is kept for hosts that do register a todowrite tool.
+// - The V1 subagent tool `task` was renamed to `subagent`; both are kept as
+//   candidates for the same reason.
 const ENRICHMENT_TARGETS: Array<{ candidates: string[]; suffix: string; marker: string }> = [
 	{ candidates: ["todowrite"], suffix: TODOWRITE_SUFFIX, marker: "verification evidence" },
 	{ candidates: [...EDIT_TOOL_NAMES], suffix: EDIT_SUFFIX, marker: "Workflow Guard requirement" },
@@ -514,7 +538,7 @@ async function handleV2Event(
 				type: "tool",
 				sessionID,
 				callID: part.id,
-				tool: part.name,
+				tool: toolPartName(part),
 				state: {
 					status,
 					error: typeof toolState?.error === "string" ? toolState.error : toolState?.error?.message,

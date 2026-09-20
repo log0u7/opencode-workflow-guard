@@ -530,6 +530,10 @@ check("inspection command with mutation keywords in grep argument is not blocked
 check("git log with mutation keywords in grep argument is not blocked", !(await call("bash", { command: 'git log --grep="rm old files"' }, { sessionID: "s-empty" })));
 check("grep searching for mutation command name is not blocked", !(await call("bash", { command: 'grep -rn "mkdir" src/' }, { sessionID: "s-empty" })));
 check("stderr redirect to /dev/null is not a file mutation", !(await call("bash", { command: "ls missing 2>/dev/null" }, { sessionID: "s-empty" })));
+check("SQL > comparison in query is not a file mutation", !(await call("bash", { command: 'sqlite3 app.db "SELECT id FROM events WHERE count > 5"' }, { sessionID: "s-empty" })));
+check("SQL >= comparison in query is not a file mutation", !(await call("bash", { command: 'psql -c "SELECT 1 FROM metrics WHERE n >= 10"' }, { sessionID: "s-empty" })));
+check("numeric comparison in grep pattern is not a file mutation", !(await call("bash", { command: "grep -E 'latency > 200' src/log.ts" }, { sessionID: "s-empty" })));
+check("real redirect alongside numeric comparison still blocked", blocked(await call("bash", { command: 'echo "x > 5" > src/a.ts' }, { sessionID: "s-empty" })));
 check("touch outside workspace is blocked", blocked(await call("bash", { command: "touch /tmp/wg-outside-touch" }, { sessionID: "s-active" })));
 check("mkdir outside workspace is blocked", blocked(await call("bash", { command: "mkdir /tmp/wg-outside-dir" }, { sessionID: "s-active" })));
 check("single-file rm outside workspace is blocked", blocked(await call("bash", { command: "rm /tmp/wg-outside-file" }, { sessionID: "s-active" })));

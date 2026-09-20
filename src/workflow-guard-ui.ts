@@ -105,48 +105,64 @@ export const WorkflowGuardTuiV2 = (ctx: TuiContext) => {
 
 	const optionsRoot = () => ctx.location?.directory || process.cwd();
 
-	ctx.keymap.layer(() => ({
-		commands: [{
-			id: "workflow-guard.project-options",
-			title: "Workflow Guard: Project Options",
-			description: "Toggle Workflow Guard project options (recovery checkpoints, project memory, learning, title settle, ralph mode)",
-			group: "Workflow Guard",
-			palette: true,
-			slash: { name: "guard-options" },
-			async run() {
-				const root = optionsRoot();
-				for (;;) {
-					const current = new Map(TOGGLE_OPTIONS.map((option) => [option.key, readProjectOption(root, option.key)]));
-					const choice = await ctx.ui.dialog.select<ProjectToggle>({
-						title: "Workflow Guard Project Options",
-						options: TOGGLE_OPTIONS.map((option) => ({
-							title: `${option.label}: ${current.get(option.key) ? "On" : "Off"}`,
-							value: option.key,
-							description: option.description,
-						})),
-					});
-					if (!choice) break;
-					try {
-						const enabled = !readProjectOption(root, choice);
-						const path = writeProjectOption(root, choice, enabled);
-						ctx.ui.toast.show({
-							variant: "success",
-							title: "Workflow Guard",
-							message: `Saved ${choice} ${enabled ? "on" : "off"} in ${path}. Restart OpenCode to apply.`,
-						});
-					} catch (error) {
-						ctx.ui.toast.show({
-							variant: "error",
-							title: "Workflow Guard",
-							message: error instanceof Error ? error.message : String(error),
-						});
-						break;
-					}
-				}
-			},
-		}],
-		bindings: [],
-	}));
+	// `ctx.keymap.layer` creates a layer owned by the calling component and only
+	// resolves inside the TUI's provider render tree; plugin setup() runs as a
+	// plain async call outside it. Slot renders execute in a reactive scope under
+	// the provider, so the layer is registered from an app-slot claim instead.
+	// The guard keeps repeated renders from stacking duplicate layers; layers and
+	// slot claims are disposed automatically on unload.
+	let keymapLayerRegistered = false;
+	ctx.ui.slot({
+		append: "app",
+		render: () => {
+			if (!keymapLayerRegistered) {
+				keymapLayerRegistered = true;
+				ctx.keymap.layer(() => ({
+					commands: [{
+						id: "workflow-guard.project-options",
+						title: "Workflow Guard: Project Options",
+						description: "Toggle Workflow Guard project options (recovery checkpoints, project memory, learning, title settle, ralph mode)",
+						group: "Workflow Guard",
+						palette: true,
+						slash: { name: "guard-options" },
+						async run() {
+							const root = optionsRoot();
+							for (;;) {
+								const current = new Map(TOGGLE_OPTIONS.map((option) => [option.key, readProjectOption(root, option.key)]));
+								const choice = await ctx.ui.dialog.select<ProjectToggle>({
+									title: "Workflow Guard Project Options",
+									options: TOGGLE_OPTIONS.map((option) => ({
+										title: `${option.label}: ${current.get(option.key) ? "On" : "Off"}`,
+										value: option.key,
+										description: option.description,
+									})),
+								});
+								if (!choice) break;
+								try {
+									const enabled = !readProjectOption(root, choice);
+									const path = writeProjectOption(root, choice, enabled);
+									ctx.ui.toast.show({
+										variant: "success",
+										title: "Workflow Guard",
+										message: `Saved ${choice} ${enabled ? "on" : "off"} in ${path}. Restart OpenCode to apply.`,
+									});
+								} catch (error) {
+									ctx.ui.toast.show({
+										variant: "error",
+										title: "Workflow Guard",
+										message: error instanceof Error ? error.message : String(error),
+									});
+									break;
+								}
+							}
+						},
+					}],
+					bindings: [],
+				}));
+			}
+			return null;
+		},
+	});
 
 	ctx.ui.slot({ append: "home.footer.status", render: () => badge() });
 	ctx.ui.slot({ append: "prompt.footer.status", render: () => badge() });
