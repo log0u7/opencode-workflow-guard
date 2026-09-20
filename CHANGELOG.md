@@ -8,6 +8,7 @@
 
     Backwards compatible: the OpenCode 1.x server and TUI entrypoints are byte-identical, no config schema changes, and the dual default export is retained (patch bump). The only semantic change is the redirect relaxation above; real redirects (`> src/a.ts`, `>>`, fd forms, `/dev/null`) are unchanged.
 
+- Documentation: `docs/installation.md` now shows the OpenCode 2 targets (`opencode plugin add`, native `plugins` key, TUI companion in global `cli.json`) alongside the OpenCode 1.x forms, and the companion permission example covers both the V2 `permissions` array and the V1 `permission` map.
 ## 1.13.1
 
 ### Patch Changes

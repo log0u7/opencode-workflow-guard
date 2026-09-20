@@ -27,12 +27,12 @@ OpenCode 2 documents `opencode plugin add <package>` as the command to install a
 
 Use the same two commands to upgrade after a Workflow Guard release. Keep the explicit version in OpenCode's configuration rather than relying on a bare package name or `@latest`: OpenCode caches npm plugins, and an already-populated `@latest` cache key may continue resolving to the version that originally populated it. An explicit new version creates a new package-cache key without manually deleting OpenCode's cache.
 
-If you only want the server guard without the TUI companion, add the package to your project's `opencode.json` (or global `~/.config/opencode/opencode.json`):
+If you only want the server guard without the TUI companion, add the package to your project's `opencode.json` (or global `~/.config/opencode/opencode.json`). OpenCode 2 uses the plural `plugins` key; OpenCode 1.x uses the singular `plugin` key (V2 normalizes the singular form in memory, but the native shape is `plugins`):
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
+  "plugins": [
     "opencode-workflow-guard"
   ]
 }
@@ -61,17 +61,31 @@ OpenCode automatically discovers the adapter from the project-level `.opencode/p
 
 To enable the static `Workflow Guard 🛡️` prompt-bar badge, with block details reported separately through warning toasts:
 
-The recommended `opencode plugin "opencode-workflow-guard@$VERSION" --global --force` command configures this automatically. For manual installation, use the same explicit package version in `~/.config/opencode/tui.json`:
+The recommended `opencode plugin add "opencode-workflow-guard@$VERSION"` command configures this automatically: OpenCode detects both targets and registers the server plugin in the global `opencode.json(c)` and the TUI companion in the global `~/.config/opencode/cli.json` (OpenCode 2). For manual installation, use the same explicit package version in the TUI target of your OpenCode generation - global `~/.config/opencode/cli.json` with the `plugins` array on OpenCode 2:
+
 ```json
 {
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": [
-    "opencode-workflow-guard@1.7.2"
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": [
+    "opencode-workflow-guard@1.13.2"
   ]
 }
 ```
 
-The version above is illustrative; replace it with the version you intend to install. The package exposes separate server and TUI entrypoints. In `tui.json`, configure the package spec; OpenCode resolves its exported `./tui` entrypoint automatically. Do not place `workflow-guard-ui.ts` under `plugins/`; the server loader rejects TUI-only modules.
+or `~/.config/opencode/tui.json` with the `plugin` array on OpenCode 1.x:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": [
+    "opencode-workflow-guard@1.13.2"
+  ]
+}
+```
+
+The version above is illustrative; replace it with the version you intend to install. The package exposes separate server and TUI entrypoints. In the terminal-client config, configure the package spec; OpenCode resolves its exported `./tui` entrypoint automatically. Do not place `workflow-guard-ui.ts` under `plugins/`; the server loader rejects TUI-only modules.
+
+On OpenCode 2, `plugin check` and `plugin update` cover both server and TUI-only package plugins.
 
 The TUI badge uses OpenCode's Solid slot API (`@opentui/solid`). It is a runtime `dependency` of this package, so npm installs it automatically alongside `opencode-workflow-guard` - no extra install is needed.
 
@@ -127,7 +141,20 @@ Or set `WORKFLOW_GUARD_REQUIRE_REVIEW=0` in your environment. Conversely, `WORKF
 
 ## Recommended Companion Configuration
 
-For defense in depth, pair `opencode-workflow-guard` with OpenCode's native permission rules in `opencode.json` (see [OpenCode Permissions](https://opencode.ai/docs/permissions/)):
+For defense in depth, pair `opencode-workflow-guard` with OpenCode's native permission rules (see [OpenCode Permissions](https://opencode.ai/docs/permissions/)). OpenCode 2 uses one ordered `permissions` array (`bash` actions are named `shell` in V2):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permissions": [
+    { "action": "shell", "resource": "git push *main*", "effect": "deny" },
+    { "action": "shell", "resource": "git push *master*", "effect": "deny" },
+    { "action": "shell", "resource": "opencode auth*", "effect": "deny" }
+  ]
+}
+```
+
+OpenCode 1.x groups rules by tool under the singular `permission` key:
 
 ```json
 {
